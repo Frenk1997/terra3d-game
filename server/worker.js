@@ -9,6 +9,8 @@
 //   SESSION_SECRET        — любая длинная случайная строка для подписи сессий (wrangler secret)
 //   APP_PACKAGE           — (необязательно) имя пакета Android-приложения, по умолчанию com.terra3d.game
 //   GITHUB_REPO           — (необязательно) «владелец/репозиторий»: откуда брать номер последней версии APK
+//   FORCE_UPDATE          — (необязательно) '0' — пускать в игру устаревшие APK; по умолчанию играть можно только в последней версии
+//   PROMO_CODES           — (необязательно, секрет) свои промокоды, по одному в строке (формат — в README)
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -18,8 +20,8 @@ const LOGIN_TTL_MS = 10 * 60 * 1000;       // на вход через Google д
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_SAVE_BYTES = 40000;
 // Какие поля сохранения хранятся (остальное отбрасывается). Последние пять — старый формат v2.
-const SAVE_KEYS = ['v', 'planet', 'unlocked', 'planets', 'gems', 'perks', 'ppk', 'rebirths', 'ownedCosmetics', 'look', 'lastSave',
-                   'res', 'counts', 'era', 'equippedHat', 'equippedBg'];
+const SAVE_KEYS = ['v', 'planet', 'unlocked', 'planets', 'gems', 'sapphires', 'perks', 'ppk', 'rebirths', 'ownedCosmetics', 'look',
+                   'stats', 'quests', 'lastSave', 'res', 'counts', 'era', 'equippedHat', 'equippedBg'];
 const MAX_REBIRTHS = 100000;
 const SCORE_PER_MIN = 10;        // на сколько очков рейтинг может вырасти за минуту
 const FIRST_SYNC_ALLOWANCE = 25; // стартовый запас для нового аккаунта (перенос старого прогресса)
@@ -28,7 +30,7 @@ const DEFAULT_APP_PACKAGE = 'com.terra3d.game';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+  'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Terra-Client',
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Max-Age': '86400'
 };
@@ -211,6 +213,11 @@ async function handleAuthStart(url, env) {
   const state = url.searchParams.get('state') || '';
   const challenge = url.searchParams.get('challenge') || '';
   const app = url.searchParams.get('app') === '1' ? 1 : 0;
+  if (app) {
+    // вход открывается в браузере: старые версии игры (без номера сборки или со старым) получают страницу «Обновите игру»
+    const old = await blockingRelease(parseInt(url.searchParams.get('build') || '0', 10) || 0, env);
+    if (old) return updatePage(old);
+  }
   if (!STATE_RE.test(state) || !CHALLENGE_RE.test(challenge)) {
     return htmlPage(400, { title: 'Неверная ссылка входа', text: 'Вернитесь в игру и нажмите «Войти через Google» ещё раз.' });
   }
@@ -291,9 +298,9 @@ async function handleExchange(request, env) {
 
 
 // ---------- версии приложения ----------
-// APK пишет в User-Agent «Terra3DApp/1 TerraBuild/<номер сборки>». Сборки до 1.0.5 номер не передают:
-// своего окна «Вышло обновление» у них нет, поэтому сервер подсказывает им сам — в рейтинге и в плашке места.
+// APK пишет в User-Agent «Terra3DApp/1 TerraBuild/<номер сборки>» (сборки до 1.0.5 номер не передают — для них это 0).
 // Номер последней версии — из version.json, который GitHub-сценарий кладёт в каждый релиз рядом с APK.
+// Играть можно только в последней версии APK (FORCE_UPDATE='0' отключает). Сайт всегда свежий — его не трогаем.
 const RELEASE_CACHE_MS = 10 * 60 * 1000;
 const RELEASE_RETRY_MS = 2 * 60 * 1000;
 let releaseCache = { at: 0, data: null };
@@ -304,12 +311,14 @@ function clientInfo(request) {
   return { app: /\bTerra3DApp\//.test(ua), build: m ? parseInt(m[1], 10) : 0 };
 }
 const repoOf = (env) => (env.GITHUB_REPO && /^[\w.-]+\/[\w.-]+$/.test(env.GITHUB_REPO) ? env.GITHUB_REPO : '');
+const forceUpdate = (env) => String(env.FORCE_UPDATE ?? '1') !== '0';
 
 async function latestRelease(env) {
   const repo = repoOf(env);
   if (!repo) return null;
   const now = Date.now();
-  if (releaseCache.at && now - releaseCache.at < (releaseCache.data ? RELEASE_CACHE_MS : RELEASE_RETRY_MS)) return releaseCache.data;
+  const ttl = env.RELEASE_CACHE_MS !== undefined ? Number(env.RELEASE_CACHE_MS) : (releaseCache.data ? RELEASE_CACHE_MS : RELEASE_RETRY_MS);
+  if (releaseCache.at && now - releaseCache.at < ttl) return releaseCache.data;
   let data = null;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 4000);
@@ -334,35 +343,153 @@ async function latestRelease(env) {
   releaseCache = { at: now, data: data || releaseCache.data };
   return releaseCache.data;
 }
-
-// Старый APK (без номера сборки), для которого уже есть новая версия
-async function legacyUpdate(request, env) {
-  const c = clientInfo(request);
-  if (!c.app || c.build) return null;
-  return await latestRelease(env);
+// Последняя версия, если сборка build устарела и устаревшие версии не пускаем; иначе null
+async function blockingRelease(build, env) {
+  if (!forceUpdate(env)) return null;
+  const latest = await latestRelease(env);
+  return latest && build < latest.build ? latest : null;
 }
-// Плашка «🏆 #3» в старых версиях: дописываем подсказку
-const legacyRank = (rank) => `${rank} · ⬆ Обновить`;
-// Баннер для старых версий: они вставляют поле total из /api/leaderboard в рейтинг как HTML
-function legacyBanner(latest) {
-  const notes = latest.notes ? escHtml(latest.notes) : 'Новые эпохи, планеты и улучшения';
-  // место «#3 · ⬆ Обновить» в строке «вы» — помельче, чтобы не теснило ник
-  return '<style>.lb-me-rank{font-size:0.74rem!important;line-height:1.25;min-width:58px!important;max-width:64px}</style>'
-    + '<a href="' + escHtml(latest.url) + '" style="display:block;margin:10px 0 2px;padding:12px 14px;border-radius:14px;'
-    + 'background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;text-decoration:none;font-size:0.82rem;'
-    + 'line-height:1.35;font-weight:600;letter-spacing:0;text-transform:none;white-space:normal;box-shadow:0 6px 20px rgba(76,29,149,0.45)">'
-    + '<b style="display:block;font-size:0.95rem;font-weight:900;margin-bottom:3px">⬆️ Вышла новая версия ' + escHtml(latest.version) + '</b>'
-    + notes + '<span style="display:block;margin-top:8px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,0.18);'
-    + 'text-align:center;font-weight:900">Нажмите, чтобы скачать</span>'
-    + '<span style="display:block;margin-top:6px;font-size:0.7rem;opacity:0.85">Установите поверх текущей — прогресс сохранится</span></a><span hidden>';
+async function outdatedApp(request, env) {
+  const c = clientInfo(request);
+  return c.app ? blockingRelease(c.build, env) : null;
+}
+function updatePage(latest) {
+  return htmlPage(200, {
+    title: 'Обновите игру',
+    text: `Эта версия Terra 3D устарела — играть можно только в новой ${latest.version}. Скачайте её и установите поверх старой: прогресс хранится в аккаунте и никуда не пропадёт.`,
+    primary: latest.url, primaryLabel: `⬇️ Скачать Terra 3D ${latest.version}`
+  });
+}
+
+// ---------- недели и доски рейтинга ----------
+// Неделя начинается в понедельник 00:00 по Москве (эпоха Unix — четверг)
+const WEEK_MS = 7 * 86400000;
+const WEEK_OFFSET = 4 * 86400000 - 3 * 3600000;
+const weekId = (t) => Math.floor((t - WEEK_OFFSET) / WEEK_MS);
+const weekEnd = (w) => (w + 1) * WEEK_MS + WEEK_OFFSET;
+const PLANET_MAX = { earth: 9, mars: 4, jupiter: 4 };   // последняя эпоха/этап (с нуля)
+const BOARDS = ['all', 'earth', 'mars', 'jupiter'];
+const PLANET_STEP = 100000;                              // счёт планеты = этап * 100000 + постройки
+function planetValue(pid, pl, earthEra) {
+  if (!pl || typeof pl !== 'object') return 0;
+  const raw = pid === 'earth' ? earthEra : pl.era;
+  const stage = Math.min(PLANET_MAX[pid], Math.max(0, Number.isInteger(raw) ? raw : 0));
+  let b = 0, n = 0;
+  if (pl.counts && typeof pl.counts === 'object') {
+    for (const k in pl.counts) {
+      if (++n > 60) break;
+      const c = pl.counts[k];
+      if (Number.isInteger(c) && c > 0) b += Math.min(c, PLANET_STEP);
+    }
+  }
+  return stage * PLANET_STEP + Math.min(b, PLANET_STEP - 1);
+}
+
+// ---------- промокоды ----------
+// В открытом репозитории лежит только SHA-256 кода (заглавными, без пробелов и дефисов) — сами коды знает владелец игры.
+// Свои коды можно добавить секретом PROMO_CODES (README). once — один раз на аккаунт, limit — всего активаций.
+const PROMO_BUILTIN = [
+  { id: 'start', hash: '45d58eab1347a918668959179d2ba158a17d9e1011996dca57019b347f84dfb2', once: true, title: 'Начальный пак',
+    text: 'Добро пожаловать в Terra 3D! Немного ресурсов и кристаллов для старта.',
+    reward: { gems: 3, sapphires: 3, res: { 'earth:solar': 3000, 'earth:water': 1500, 'earth:air': 800 }, items: ['bg-founder'] } },
+  { id: 'first100', hash: 'cc99f79d21d8ffeffd61182c1ca36812f6976f6722c5cc6fcbdb14d45979af6c', once: true, limit: 100, title: 'Пак первой сотни',
+    text: 'Вы среди первых ста игроков, активировавших этот код!',
+    reward: { gems: 5, sapphires: 5 } },
+  { id: 'discord', hash: 'f19f2f307a5d681f0c8ed3f15cc5566e898ce1ea572e2a21bb447347936cc36e', once: true, title: 'Пак сообщества',
+    text: 'Спасибо, что вы с нами в сообществе игры!',
+    reward: { gems: 5, sapphires: 10, items: ['bg-community'] } },
+  { id: 'blogger', hash: '96dc74e8d25afbee0d7199a594f8732ed74c8a9d9fb46ae5ff052a5c9173c90e', once: true, title: 'Пак блогера',
+    text: 'Подарок от любимого автора — ускорьте развитие планеты.',
+    reward: { gems: 4, sapphires: 6, res: { 'earth:solar': 20000, 'earth:water': 10000 } } },
+  { id: 'admin', hash: 'f4a3cd5e347961fb4770f31372f210c35ca6beb84b25e79be12ea2977fffe89d', once: false, title: 'Пак администрации',
+    text: 'Режим администратора: огромный запас всего для проверки игры.',
+    reward: { gems: 1000, sapphires: 1000, all: 100000000, items: ['bg-admin'] } }
+];
+const RES_PLANET = {
+  solar: 'earth', water: 'earth', air: 'earth', biomass: 'earth', science: 'earth',
+  regolith: 'mars', ice: 'mars', iron: 'mars', oxygen: 'mars',
+  hydrogen: 'jupiter', energy: 'jupiter', helium: 'jupiter', metal: 'jupiter'
+};
+const PROMO_ITEMS = ['bg-founder', 'bg-community', 'bg-admin', 'hat_crown', 'hat_party', 'hat_wizard', 'hat_ufo', 'hat_halo',
+  'bg-nebula', 'bg-deep', 'bg-emerald', 'bg-supernova', 'bg-cyber'];
+function normCode(c) {
+  const s = String(c || '').toUpperCase().replace(/[\s\-_]+/g, '');
+  return /^[A-Z0-9А-ЯЁ]{3,40}$/.test(s) ? s : '';
+}
+async function sha256hex(text) {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(text)));
+  return [...d].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+// Строка секрета: КОД | Название | gems=5 sapphires=3 solar=1000 item=bg-founder | multi | limit=100 | until=2026-12-31
+function parsePromoLine(line) {
+  const parts = line.split('|').map(x => x.trim());
+  const code = normCode(parts[0]);
+  if (!code) return null;
+  const promo = { id: 'c:' + code, code, once: true, title: (parts[1] || 'Подарок').slice(0, 40), text: 'Награда уже у вас!', reward: {} };
+  const rw = promo.reward;
+  for (const tok of (parts[2] || '').split(/[\s,;]+/)) {
+    const m = tok.match(/^([a-z_-]+)=([\w.-]+)$/i);
+    if (!m) continue;
+    const k = m[1].toLowerCase(), v = m[2];
+    const n = Math.min(1e12, Math.max(0, Math.floor(Number(v)) || 0));
+    if (k === 'gems' || k === 'sapphires' || k === 'all') { if (n) rw[k] = n; }
+    else if (k === 'item' && PROMO_ITEMS.includes(v)) (rw.items = rw.items || []).push(v);
+    else if (RES_PLANET[k] && n) (rw.res = rw.res || {})[`${RES_PLANET[k]}:${k}`] = n;
+  }
+  for (const f of parts.slice(3)) {
+    if (/^multi$/i.test(f)) promo.once = false;
+    const l = f.match(/^limit=(\d+)$/i); if (l) promo.limit = parseInt(l[1], 10);
+    const u = f.match(/^until=(\d{4}-\d{2}-\d{2})$/i); if (u) promo.until = Date.parse(u[1] + 'T23:59:59+03:00');
+  }
+  return promo;
+}
+async function findPromo(code, env) {
+  if (env.PROMO_CODES) {
+    for (const line of String(env.PROMO_CODES).split(/\r?\n/)) {
+      if (!line.trim() || line.trim().startsWith('#')) continue;
+      const pr = parsePromoLine(line);
+      if (pr && pr.code === code) return pr;
+    }
+  }
+  const h = await sha256hex(code);
+  return PROMO_BUILTIN.find(x => x.hash === h) || null;
+}
+async function handleRedeem(request, sub, env) {
+  const p = await getPlayer(env, sub);
+  if (!p) return fail(404, 'no_profile');
+  const body = await readJson(request);
+  const code = normCode(body && body.code);
+  if (!code) return fail(400, 'bad_request');
+  const now = Date.now();
+  // защита от перебора: не больше 10 неверных кодов за 10 минут
+  const fails = await env.DB.prepare('SELECT COUNT(*) AS c FROM promo_fails WHERE sub = ?1 AND at > ?2').bind(sub, now - 600000).first();
+  if (fails && fails.c >= 10) return fail(429, 'too_many_attempts');
+  const promo = await findPromo(code, env);
+  if (!promo) {
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO promo_fails (sub, at) VALUES (?1, ?2)').bind(sub, now),
+      env.DB.prepare('DELETE FROM promo_fails WHERE at < ?1').bind(now - 3600000)
+    ]);
+    return fail(404, 'invalid_code');
+  }
+  if (promo.until && now > promo.until) return fail(410, 'code_expired');
+  const limit = promo.limit || 0;
+  // одна атомарная вставка: не даёт активировать дважды даже при двойном нажатии
+  const r = await env.DB.prepare(
+    'INSERT INTO promo_uses (code_id, sub, at) SELECT ?1, ?2, ?3 WHERE (?4 = 0 OR NOT EXISTS (SELECT 1 FROM promo_uses WHERE code_id = ?1 AND sub = ?2))'
+    + ' AND (?5 = 0 OR (SELECT COUNT(*) FROM promo_uses WHERE code_id = ?1) < ?5)'
+  ).bind(promo.id, sub, now, promo.once ? 1 : 0, limit).run();
+  if (!r.meta || !r.meta.changes) {
+    const used = promo.once && await env.DB.prepare('SELECT 1 AS x FROM promo_uses WHERE code_id = ?1 AND sub = ?2').bind(promo.id, sub).first();
+    return fail(409, used ? 'already_used' : 'code_exhausted');
+  }
+  return json({ ok: true, id: promo.id, title: promo.title, text: promo.text, reward: promo.reward });
 }
 
 // ---------- игровое API ----------
-async function handleMe(request, sub, env) {
+async function handleMe(sub, env) {
   const p = await getPlayer(env, sub);
-  const profile = p ? await profileView(env, p) : null;
-  if (profile && await legacyUpdate(request, env)) profile.rank = legacyRank(profile.rank);
-  return json({ uid: sub, profile, save: parseSave(p) });
+  return json({ uid: sub, profile: p ? await profileView(env, p) : null, save: parseSave(p) });
 }
 
 async function handleProfile(request, sub, env) {
@@ -391,10 +518,11 @@ async function handleSync(request, sub, env) {
   const s = body && body.save;
   if (!s || typeof s !== 'object') return fail(400, 'bad_request');
 
-  // Версия формата: 2 — одна планета и 6 эпох, 3 — несколько планет и 10 эпох Земли.
+  // Версия формата: 2 — одна планета и 6 эпох, 3 — несколько планет и 10 эпох Земли, 4 — сапфиры и квесты.
   const v = Number.isInteger(s.v) ? s.v : 2;
   const stored = parseSave(p);
-  if (stored && (Number(stored.v) || 2) >= 3 && v < 3) {
+  const storedV = stored ? (Number(stored.v) || 2) : 0;
+  if (storedV >= 3 && v < storedV) {
     // старое приложение не должно затереть прогресс, сохранённый новой версией
     return fail(409, 'client_outdated');
   }
@@ -427,48 +555,124 @@ async function handleSync(request, sub, env) {
   }
   const scoreUpdatedAt = newScore !== p.score ? now : p.score_updated_at;
 
-  await env.DB.prepare('UPDATE players SET save = ?1, score = ?2, rebirths = ?3, era = ?4, updated_at = ?5, score_updated_at = ?6 WHERE sub = ?7')
-    .bind(raw, newScore, Math.floor(newScore / 10), newScore % 10, now, scoreUpdatedAt, sub).run();
+  const week = weekId(now);
+  const stmts = [
+    env.DB.prepare('UPDATE players SET save = ?1, score = ?2, rebirths = ?3, era = ?4, updated_at = ?5, score_updated_at = ?6 WHERE sub = ?7')
+      .bind(raw, newScore, Math.floor(newScore / 10), newScore % 10, now, scoreUpdatedAt, sub),
+    // недельный общий топ: прирост очков с первой синхронизации на этой неделе
+    env.DB.prepare(`INSERT INTO weekly_scores (week, board, sub, score, base, at) VALUES (?1, 'all', ?2, ?3 - ?4, ?4, ?5)
+      ON CONFLICT (week, board, sub) DO UPDATE SET score = ?3 - weekly_scores.base, at = ?5 WHERE ?3 - weekly_scores.base > weekly_scores.score`)
+      .bind(week, sub, newScore, p.score, now)
+  ];
+  // топы планет: лучший этап + постройки (за всё время и за неделю)
+  if (v >= 3 && clean.planets) {
+    const unlocked = Array.isArray(clean.unlocked) ? clean.unlocked : [];
+    for (const pid of ['earth', 'mars', 'jupiter']) {
+      if (pid !== 'earth' && !unlocked.includes(pid)) continue;
+      const val = planetValue(pid, clean.planets[pid], era);
+      if (val <= 0) continue;
+      stmts.push(env.DB.prepare(`INSERT INTO planet_scores (sub, planet, best, best_at) VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT (sub, planet) DO UPDATE SET best = ?3, best_at = ?4 WHERE ?3 > planet_scores.best`).bind(sub, pid, val, now));
+      stmts.push(env.DB.prepare(`INSERT INTO weekly_scores (week, board, sub, score, base, at) VALUES (?1, ?2, ?3, ?4, 0, ?5)
+        ON CONFLICT (week, board, sub) DO UPDATE SET score = ?4, at = ?5 WHERE ?4 > weekly_scores.score`).bind(week, pid, sub, val, now));
+    }
+  }
+  if (Math.random() < 0.02) stmts.push(env.DB.prepare('DELETE FROM weekly_scores WHERE week < ?1').bind(week - 3));
+  await env.DB.batch(stmts);
 
   const fresh = await getPlayer(env, sub);
-  let rank = await rankOf(env, fresh);
-  if (await legacyUpdate(request, env)) rank = legacyRank(rank);
-  return json({ ok: true, score: fresh.score, rebirths: fresh.rebirths, era: fresh.era, rank });
+  return json({ ok: true, score: fresh.score, rebirths: fresh.rebirths, era: fresh.era, rank: await rankOf(env, fresh) });
 }
 
 async function handleReset(sub, env) {
   const p = await getPlayer(env, sub);
   if (!p) return fail(404, 'no_profile');
   const now = Date.now();
-  await env.DB.prepare('UPDATE players SET save = NULL, score = 0, rebirths = 0, era = 0, updated_at = ?1, score_updated_at = ?1 WHERE sub = ?2').bind(now, sub).run();
+  await env.DB.batch([
+    env.DB.prepare('UPDATE players SET save = NULL, score = 0, rebirths = 0, era = 0, updated_at = ?1, score_updated_at = ?1 WHERE sub = ?2').bind(now, sub),
+    env.DB.prepare('DELETE FROM planet_scores WHERE sub = ?1').bind(sub),
+    env.DB.prepare('DELETE FROM weekly_scores WHERE sub = ?1').bind(sub)
+  ]);
   return json({ ok: true });
 }
 
 async function handleDelete(sub, env) {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM players WHERE sub = ?1').bind(sub),
-    env.DB.prepare('DELETE FROM logins WHERE sub = ?1').bind(sub)
+    env.DB.prepare('DELETE FROM logins WHERE sub = ?1').bind(sub),
+    env.DB.prepare('DELETE FROM planet_scores WHERE sub = ?1').bind(sub),
+    env.DB.prepare('DELETE FROM weekly_scores WHERE sub = ?1').bind(sub),
+    env.DB.prepare('DELETE FROM promo_uses WHERE sub = ?1').bind(sub),
+    env.DB.prepare('DELETE FROM promo_fails WHERE sub = ?1').bind(sub)
   ]);
   return json({ ok: true });
 }
 
 async function handleLeaderboard(request, url, env) {
   const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
-  const [rows, total] = await env.DB.batch([
-    env.DB.prepare('SELECT nickname, score, rebirths, era FROM players ORDER BY score DESC, score_updated_at ASC LIMIT ?1').bind(limit),
-    env.DB.prepare('SELECT COUNT(*) AS c FROM players')
-  ]);
-  const count = (total.results && total.results[0] && total.results[0].c) || 0;
-  const latest = await legacyUpdate(request, env);
-  return json({ players: rows.results || [], total: latest ? count + legacyBanner(latest) : count });
+  const board = BOARDS.includes(url.searchParams.get('board')) ? url.searchParams.get('board') : 'all';
+  const period = url.searchParams.get('period') === 'week' ? 'week' : 'all';
+  const now = Date.now(), week = weekId(now);
+  let sub = null;
+  try { sub = await authedSub(request, env); } catch (e) {}
+  const DB = env.DB;
+  let rows, total, me = null;
+  if (board === 'all' && period === 'all') {
+    [rows, total] = await DB.batch([
+      DB.prepare('SELECT nickname, score, rebirths, era FROM players ORDER BY score DESC, score_updated_at ASC LIMIT ?1').bind(limit),
+      DB.prepare('SELECT COUNT(*) AS c FROM players')
+    ]);
+    if (sub) { const p = await getPlayer(env, sub); if (p) me = { rank: await rankOf(env, p), score: p.score, rebirths: p.rebirths, era: p.era }; }
+  } else if (period === 'all') {
+    [rows, total] = await DB.batch([
+      DB.prepare('SELECT p.nickname, s.best AS score FROM planet_scores s JOIN players p ON p.sub = s.sub WHERE s.planet = ?1 AND s.best > 0 ORDER BY s.best DESC, s.best_at ASC LIMIT ?2').bind(board, limit),
+      DB.prepare('SELECT COUNT(*) AS c FROM planet_scores WHERE planet = ?1 AND best > 0').bind(board)
+    ]);
+    if (sub) {
+      const m = await DB.prepare('SELECT best AS score, best_at AS at FROM planet_scores WHERE sub = ?1 AND planet = ?2').bind(sub, board).first();
+      if (m && m.score > 0) {
+        const r = await DB.prepare('SELECT COUNT(*) AS c FROM planet_scores WHERE planet = ?1 AND (best > ?2 OR (best = ?2 AND best_at < ?3))').bind(board, m.score, m.at).first();
+        me = { rank: (r ? r.c : 0) + 1, score: m.score };
+      }
+    }
+  } else {
+    const sel = board === 'all'
+      ? 'SELECT p.nickname, w.score, p.rebirths, p.era FROM weekly_scores w JOIN players p ON p.sub = w.sub'
+      : 'SELECT p.nickname, w.score FROM weekly_scores w JOIN players p ON p.sub = w.sub';
+    [rows, total] = await DB.batch([
+      DB.prepare(sel + ' WHERE w.week = ?1 AND w.board = ?2 AND w.score > 0 ORDER BY w.score DESC, w.at ASC LIMIT ?3').bind(week, board, limit),
+      DB.prepare('SELECT COUNT(*) AS c FROM weekly_scores WHERE week = ?1 AND board = ?2 AND score > 0').bind(week, board)
+    ]);
+    if (sub) {
+      const m = await DB.prepare('SELECT score, at FROM weekly_scores WHERE week = ?1 AND board = ?2 AND sub = ?3').bind(week, board, sub).first();
+      if (m && m.score > 0) {
+        const r = await DB.prepare('SELECT COUNT(*) AS c FROM weekly_scores WHERE week = ?1 AND board = ?2 AND (score > ?3 OR (score = ?3 AND at < ?4))').bind(week, board, m.score, m.at).first();
+        me = { rank: (r ? r.c : 0) + 1, score: m.score };
+      }
+    }
+  }
+  let players = rows.results || [];
+  if (board !== 'all') {
+    const split = (x) => ({ ...x, era: Math.floor(x.score / PLANET_STEP), buildings: x.score % PLANET_STEP });
+    players = players.map(split);
+    if (me) me = split(me);
+  }
+  return json({
+    board, period, players, me,
+    total: (total.results && total.results[0] && total.results[0].c) || 0,
+    week: { id: week, endsAt: weekEnd(week) }
+  });
 }
 
 // Новые версии сами спрашивают, не вышло ли обновление
 async function handleClient(request, env) {
   const c = clientInfo(request);
   const latest = await latestRelease(env);
-  return json({ latest, update: !!(latest && c.app && c.build > 0 && c.build < latest.build) });
+  const update = !!(latest && c.app && c.build > 0 && c.build < latest.build);
+  return json({ latest, update, required: update && forceUpdate(env) });
 }
+
+const PROTECTED = ['/api/me', '/api/profile', '/api/sync', '/api/reset', '/api/account', '/api/redeem'];
 
 export default {
   async fetch(request, env) {
@@ -480,19 +684,25 @@ export default {
       if (path === '/api/health' && m === 'GET') return json({ terra: true, configured: isConfigured(env) });
       if (path === '/api/leaderboard' && m === 'GET') return await handleLeaderboard(request, url, env);
       if (path === '/api/client' && m === 'GET') return await handleClient(request, env);
+      // устаревшие APK: новые версии получают 426 и показывают окно обновления,
+      // старые (не знают 426) — 401: их выкидывает на экран входа, а вход открывает страницу «Обновите игру»
+      if (path === '/api/auth/exchange' || PROTECTED.includes(path)) {
+        const old = await outdatedApp(request, env);
+        if (old) return request.headers.get('X-Terra-Client') ? json({ error: 'update_required', latest: old }, 426) : fail(401, 'update_required');
+      }
       if (path === '/api/auth/exchange' && m === 'POST') return await handleExchange(request, env);
       if (path === '/auth/google/start' && m === 'GET') return await handleAuthStart(url, env);
       if (path === '/auth/google/callback' && m === 'GET') return await handleAuthCallback(url, env);
 
-      const protectedRoutes = ['/api/me', '/api/profile', '/api/sync', '/api/reset', '/api/account'];
-      if (protectedRoutes.includes(path)) {
+      if (PROTECTED.includes(path)) {
         const sub = await authedSub(request, env);
         if (!sub) return fail(401, 'unauthorized');
-        if (path === '/api/me' && m === 'GET') return await handleMe(request, sub, env);
+        if (path === '/api/me' && m === 'GET') return await handleMe(sub, env);
         if (path === '/api/profile' && m === 'POST') return await handleProfile(request, sub, env);
         if (path === '/api/sync' && m === 'POST') return await handleSync(request, sub, env);
         if (path === '/api/reset' && m === 'POST') return await handleReset(sub, env);
         if (path === '/api/account' && m === 'DELETE') return await handleDelete(sub, env);
+        if (path === '/api/redeem' && m === 'POST') return await handleRedeem(request, sub, env);
       }
       return fail(404, 'not_found');
     } catch (e) {

@@ -2,7 +2,7 @@
 // Числа баланса подобраны симуляцией (см. tools/ в истории разработки).
 'use strict';
 
-const GAME_VERSION = 3; // формат сохранения
+const GAME_VERSION = 4; // формат сохранения (4 — сапфиры, квесты, статистика)
 
 const RES = {
   // Земля
@@ -21,8 +21,9 @@ const RES = {
   energy:   { name: 'Энергия',   icon: '⚡', tint: 'rgba(250,204,21,0.2)' },
   helium:   { name: 'Гелий-3',   icon: '✨', tint: 'rgba(216,180,254,0.22)' },
   metal:    { name: 'Мет. водород', icon: '💠', tint: 'rgba(96,165,250,0.22)' },
-  // общий
-  gems:     { name: 'Кристаллы', icon: '💎', tint: 'rgba(192,132,252,0.25)' }
+  // общие валюты
+  gems:     { name: 'Кристаллы', icon: '💎', tint: 'rgba(192,132,252,0.25)' },
+  sapphire: { name: 'Сапфиры',   icon: '🔷', tint: 'rgba(59,130,246,0.25)' }
 };
 
 // u — эпоха (этап), с которой постройка открывается; tab — вкладка a/b/c
@@ -178,8 +179,61 @@ const COSMETICS = [
   { id: 'bg-supernova',   type: 'bg', name: 'Сверхновая',          icon: '🔥', desc: 'Багровое небо звезды.', cost: { gems: 2 }, swatch: 'radial-gradient(circle at 50% 30%, #c2410c, #3a1205 70%)' },
   { id: 'bg-cyber',       type: 'bg', name: 'Кибернетика',         icon: '👾', desc: 'Тёмно-синяя матрица.', cost: { gems: 3 }, swatch: 'linear-gradient(160deg, #020617, #312e81 50%, #020617)' },
   { id: 'bg-mars-sunset', type: 'bg', name: 'Марсианский закат',   icon: '🌅', desc: 'На Марсе закаты голубые!', cost: { 'mars:oxygen': 8000 }, planet: 'mars', swatch: 'linear-gradient(180deg, #1e3a5f, #7c2d12 70%)' },
-  { id: 'bg-aurora',      type: 'bg', name: 'Полярное сияние',     icon: '🌠', desc: 'Сияние над полюсами Юпитера.', cost: { 'jupiter:energy': 40000 }, planet: 'jupiter', swatch: 'linear-gradient(160deg, #065f46, #6d28d9 55%, #0b1026)' }
+  { id: 'bg-aurora',      type: 'bg', name: 'Полярное сияние',     icon: '🌠', desc: 'Сияние над полюсами Юпитера.', cost: { 'jupiter:energy': 40000 }, planet: 'jupiter', swatch: 'linear-gradient(160deg, #065f46, #6d28d9 55%, #0b1026)' },
+  // Только по промокоду (code: true — не продаются)
+  { id: 'bg-founder',     type: 'bg', name: 'Первопроходец',       icon: '🌟', desc: 'Золотая пыль первых звёзд.', code: true, swatch: 'radial-gradient(circle at 50% 30%, #a16207, #1c1203 70%)' },
+  { id: 'bg-community',   type: 'bg', name: 'Сообщество',          icon: '💬', desc: 'Для своих — из пака сообщества.', code: true, swatch: 'linear-gradient(160deg, #312e81, #6d28d9 50%, #0b1026)' },
+  { id: 'bg-admin',       type: 'bg', name: 'Командный центр',     icon: '🛡️', desc: 'Цвета администрации игры.', code: true, swatch: 'linear-gradient(160deg, #450a0a, #0f172a 55%, #b91c1c)' }
+];
+
+// Перерождение: каждое следующее требует больше. Номер перерождения n = 0, 1, 2…
+// Земля: 5-я эпоха, затем +1 за каждое (до 10-й); дальше этапы Марса (2→5), потом Юпитера (2→5).
+function rebirthRequirements(n) {
+  const r = { earth: Math.min(9, 4 + n) };
+  if (n >= 6) r.mars = Math.min(4, n - 5);
+  if (n >= 10) r.jupiter = Math.min(4, n - 9);
+  return r;
+}
+
+// Количество за одну покупку построек
+const BUY_MODES = [1, 10, 50, 100, 'max'];
+const BUILD_GROWTH = 1.18;   // каждая следующая постройка дороже на 18%
+
+// ===== Квесты =====
+// Ежедневные: каждый день выбираются 3 задания. stat — счётчик из статистики игрока, прирост за день.
+const DAILY_QUESTS = [
+  { id: 'd_taps',    icon: '👆', text: 'Сделайте {n} тапов по планете',  stat: 'taps',      n: 300, reward: 1 },
+  { id: 'd_build',   icon: '🏗️', text: 'Постройте {n} зданий',           stat: 'built',     n: 30,  reward: 1 },
+  { id: 'd_ast',     icon: '☄️', text: 'Сбейте {n} астероида',          stat: 'asteroids', n: 2,   reward: 2 },
+  { id: 'd_evolve',  icon: '⏫', text: 'Проведите эволюцию планеты',      stat: 'evolves',   n: 1,   reward: 1, need: 'evolve' },
+  { id: 'd_time',    icon: '⏱️', text: 'Играйте {n} минут',               stat: 'minutes',   n: 10,  reward: 1 },
+  { id: 'd_perk',    icon: '🌳', text: 'Улучшите любой перк',             stat: 'perks',     n: 1,   reward: 1, need: 'gems' },
+  { id: 'd_travel',  icon: '🚀', text: 'Слетайте на другую планету',      stat: 'travels',   n: 1,   reward: 1, need: 'planets' },
+  { id: 'd_build2',  icon: '🏙️', text: 'Постройте {n} зданий',           stat: 'built',     n: 120, reward: 2 }
+];
+const DAILY_COUNT = 3;
+const DAILY_BONUS = 2;     // за все задания дня
+
+// Достижения: разовые. kind: stat — счётчик; era — лучшая эпоха/этап планеты; rebirths; planet — открыта ли; style — косметика
+const ACHIEVEMENTS = [
+  { id: 'a_build1',  icon: '🏗️', name: 'Первый камень',       desc: 'Постройте любое здание',           kind: 'stat', key: 'built',     goal: 1,    reward: 1 },
+  { id: 'a_era3',    icon: '☁️', name: 'Дыхание планеты',     desc: 'Достигните 3-й эпохи Земли',        kind: 'era',  key: 'earth',     goal: 3,    reward: 1 },
+  { id: 'a_era5',    icon: '🌳', name: 'Зелёный мир',          desc: 'Достигните 5-й эпохи Земли',        kind: 'era',  key: 'earth',     goal: 5,    reward: 2 },
+  { id: 'a_style',   icon: '🎩', name: 'Модник',               desc: 'Купите шапку или фон',              kind: 'style',                  goal: 1,    reward: 1 },
+  { id: 'a_ast10',   icon: '🛡️', name: 'Щит планеты',         desc: 'Сбейте 10 астероидов',             kind: 'stat', key: 'asteroids', goal: 10,   reward: 2 },
+  { id: 'a_gold',    icon: '✨', name: 'Золотая лихорадка',    desc: 'Сбейте золотой астероид',          kind: 'stat', key: 'golden',    goal: 1,    reward: 2 },
+  { id: 'a_taps',    icon: '👆', name: 'Неутомимый палец',     desc: 'Сделайте 5 000 тапов',              kind: 'stat', key: 'taps',      goal: 5000, reward: 2 },
+  { id: 'a_reb1',    icon: '🌀', name: 'Новое начало',         desc: 'Совершите первое перерождение',     kind: 'rebirths',               goal: 1,    reward: 3 },
+  { id: 'a_build500',icon: '🏘️', name: 'Архитектор',          desc: 'Постройте 500 зданий',              kind: 'stat', key: 'built',     goal: 500,  reward: 2 },
+  { id: 'a_era10',   icon: '🌞', name: 'Звёздная империя',     desc: 'Достигните 10-й эпохи Земли',       kind: 'era',  key: 'earth',     goal: 10,   reward: 5 },
+  { id: 'a_mars',    icon: '🔴', name: 'Первые на Марсе',      desc: 'Снарядите экспедицию на Марс',      kind: 'planet', key: 'mars',    goal: 1,    reward: 3 },
+  { id: 'a_ast50',   icon: '☄️', name: 'Гроза астероидов',     desc: 'Сбейте 50 астероидов',             kind: 'stat', key: 'asteroids', goal: 50,   reward: 4 },
+  { id: 'a_reb5',    icon: '♾️', name: 'Вечный цикл',          desc: 'Совершите 5 перерождений',          kind: 'rebirths',               goal: 5,    reward: 5 },
+  { id: 'a_mars5',   icon: '🌊', name: 'Зелёный Марс',         desc: 'Достигните 5-го этапа Марса',       kind: 'era',  key: 'mars',      goal: 5,    reward: 4 },
+  { id: 'a_jup',     icon: '🟠', name: 'К гиганту',            desc: 'Снарядите экспедицию на Юпитер',    kind: 'planet', key: 'jupiter', goal: 1,    reward: 5 },
+  { id: 'a_build5k', icon: '🌆', name: 'Градостроитель',       desc: 'Постройте 5 000 зданий',            kind: 'stat', key: 'built',     goal: 5000, reward: 4 },
+  { id: 'a_jup5',    icon: '⚡', name: 'Повелитель бурь',      desc: 'Достигните 5-го этапа Юпитера',     kind: 'era',  key: 'jupiter',   goal: 5,    reward: 6 }
 ];
 
 // Для Node (симуляция баланса и тесты)
-if (typeof module !== 'undefined') module.exports = { GAME_VERSION, RES, PLANETS, PLANET_ORDER, GLOBAL_PERKS, COSMETICS };
+if (typeof module !== 'undefined') module.exports = { GAME_VERSION, RES, PLANETS, PLANET_ORDER, GLOBAL_PERKS, COSMETICS, rebirthRequirements, BUY_MODES, BUILD_GROWTH, DAILY_QUESTS, DAILY_COUNT, DAILY_BONUS, ACHIEVEMENTS };

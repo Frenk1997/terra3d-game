@@ -52,6 +52,9 @@
   body.bg-cyber     { background: linear-gradient(160deg, #020617 0%, #231f66 50%, #020617 100%); }
   body.bg-mars-sunset { background: linear-gradient(180deg, #1e3a5f 0%, #3b2a4a 35%, #7c2d12 75%, #1a0703 100%); }
   body.bg-aurora    { background: linear-gradient(160deg, #053b33 0%, #3b0764 50%, #0b1026 100%); }
+  body.bg-founder   { background: radial-gradient(120% 70% at 50% 15%, #5c3d06 0%, #1c1203 55%, #050302 100%); }
+  body.bg-community { background: linear-gradient(160deg, #1e1b4b 0%, #4c1d95 50%, #0b1026 100%); }
+  body.bg-admin     { background: linear-gradient(160deg, #3b0a0a 0%, #0f172a 55%, #450a0a 100%); }
 
   /* ================= HEADER ================= */
   header {
@@ -278,6 +281,103 @@
   .update-sheet .sheet-stack { width: 100%; }
   .update-sheet .update-hint { font-size: 0.7rem; color: var(--text-dim); }
 
+
+  /* ================= КНОПКИ КВЕСТЫ / МАГАЗИН ================= */
+  .viewport-side { position: absolute; top: 44px; left: 0; right: 0; z-index: 5; padding: 0 10px; display: flex; justify-content: space-between; pointer-events: none; }
+  .side-btn { display: flex; align-items: center; gap: 5px; position: relative; }
+  .side-btn b { font-weight: 800; }
+  .side-btn.glow { border-color: rgba(250, 204, 21, 0.8); box-shadow: 0 0 14px rgba(250, 204, 21, 0.45); animation: sideGlow 1.6s ease-in-out infinite; }
+  @keyframes sideGlow { 50% { box-shadow: 0 0 22px rgba(250, 204, 21, 0.7); } }
+  .q-badge { position: absolute; top: -6px; right: -6px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 99px; background: #ef4444; color: #fff; font-size: 0.62rem; font-weight: 900; display: grid; place-items: center; box-shadow: 0 0 0 2px #0b1026; }
+  .q-badge[hidden] { display: none; }
+
+  /* ================= КОШЕЛЁК ================= */
+  .res-wallet { flex-direction: column; align-items: stretch; justify-content: center; gap: 2px; padding: 4px 9px; }
+  .wallet-line { display: flex; align-items: center; gap: 6px; line-height: 1.15; }
+  .wallet-line .w-ico { font-size: 0.78rem; width: 18px; text-align: center; }
+  .wallet-line .res-val { font-size: 0.8rem; }
+  .wallet-line.sapph .res-val { color: #93c5fd; }
+
+  /* ================= ПОКУПКА ПАЧКАМИ ================= */
+  .buy-modes { position: sticky; top: -10px; z-index: 3; margin: -10px -10px 0; padding: 8px 10px; display: flex; align-items: center; gap: 4px; background: linear-gradient(180deg, rgba(10, 15, 34, 0.98) 70%, rgba(10, 15, 34, 0)); flex-shrink: 0; }
+  .bm-lbl { font-size: 0.62rem; font-weight: 800; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-right: 2px; }
+  .bm-btn { flex: 1; min-width: 0; padding: 7px 0; border-radius: 10px; border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.05); color: #dbe4ff; font-weight: 900; font-size: 0.72rem; cursor: pointer; transition: background 0.15s, transform 0.15s; }
+  .bm-btn:active { transform: scale(0.94); }
+  .bm-btn.active { background: linear-gradient(135deg, #2f6bff, #7c3aed); border-color: transparent; color: #fff; box-shadow: 0 3px 12px rgba(91, 140, 255, 0.45); }
+  .buy-n { color: #fde68a; }
+
+  /* ================= ПРЕСТИЖ: УСЛОВИЯ ================= */
+  .reb-reqs { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; background: rgba(0, 0, 0, 0.22); border-radius: 12px; padding: 8px 10px; }
+  .reb-reqs-title { font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 800; color: #e9d5ff; }
+  .reb-req { display: flex; justify-content: space-between; gap: 8px; font-size: 0.74rem; color: #cbd5e1; }
+  .reb-req.ok { color: #86efac; }
+  .reb-have { font-weight: 900; flex-shrink: 0; }
+
+  /* ================= ТОПЫ ================= */
+  .lb-boards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; flex-shrink: 0; }
+  .lb-board { padding: 7px 2px; border-radius: 11px; border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.05); color: var(--text-dim); font-weight: 800; font-size: 0.66rem; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lb-board.active { color: #fff; background: linear-gradient(135deg, rgba(91, 140, 255, 0.4), rgba(167, 139, 250, 0.35)); border-color: rgba(167, 139, 250, 0.7); }
+  .lb-period .seg-btn { padding: 7px; font-size: 0.74rem; }
+  .lb-week { font-size: 0.66rem; color: #fde68a; text-align: center; flex-shrink: 0; }
+  .lb-pts { color: #fde68a; }
+
+  /* ================= КВЕСТЫ ================= */
+  .quests-sheet { max-width: 420px; padding: 16px 14px; gap: 10px; max-height: calc(100% - 10px); }
+  .q-head { display: flex; align-items: center; gap: 8px; }
+  .q-head > div:first-child { flex: 1; min-width: 0; }
+  .q-sub { font-size: 0.68rem; color: var(--text-dim); }
+  .q-wallet { padding: 6px 10px; border-radius: 99px; background: rgba(59, 130, 246, 0.18); border: 1px solid rgba(96, 165, 250, 0.55); font-size: 0.85rem; white-space: nowrap; }
+  .q-wallet b { color: #bfdbfe; }
+  .q-wallet.pop, .soon-wallet.pop { animation: pop 0.45s ease; }
+  .q-body { display: flex; flex-direction: column; gap: 7px; overflow-y: auto; min-height: 0; margin: 0 -4px; padding: 0 4px 4px; overscroll-behavior: contain; }
+  .q-section { display: flex; justify-content: space-between; align-items: baseline; font-size: 0.7rem; font-weight: 900; text-transform: uppercase; letter-spacing: 0.05em; color: #c4b5fd; margin-top: 4px; }
+  .q-timer { text-transform: none; letter-spacing: 0; font-weight: 700; color: var(--text-dim); font-size: 0.64rem; }
+  .q-row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 14px; background: rgba(255, 255, 255, 0.045); border: 1px solid rgba(255, 255, 255, 0.07); animation: rise 0.35s ease both; animation-delay: calc(var(--i) * 0.03s); }
+  .q-row.ready { border-color: rgba(250, 204, 21, 0.7); background: linear-gradient(135deg, rgba(250, 204, 21, 0.14), rgba(255, 255, 255, 0.04)); }
+  .q-row.claimed { opacity: 0.55; }
+  .q-ico { width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; font-size: 1.15rem; background: rgba(255, 255, 255, 0.06); flex-shrink: 0; }
+  .q-info { flex: 1; min-width: 0; }
+  .q-title { font-weight: 800; font-size: 0.8rem; }
+  .q-desc { font-size: 0.66rem; color: var(--text-dim); margin-top: 1px; }
+  .q-bar { height: 5px; border-radius: 99px; background: rgba(255, 255, 255, 0.09); margin-top: 6px; overflow: hidden; }
+  .q-bar i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #3b82f6, #a78bfa); transition: width 0.4s ease; }
+  .q-row.ready .q-bar i, .q-row.claimed .q-bar i { background: linear-gradient(90deg, #22c55e, #facc15); }
+  .q-prog { font-size: 0.6rem; color: var(--text-dim); margin-top: 3px; font-weight: 700; }
+  .q-reward { font-size: 0.74rem; font-weight: 900; color: #93c5fd; white-space: nowrap; padding: 6px 8px; border-radius: 10px; background: rgba(59, 130, 246, 0.12); flex-shrink: 0; }
+  .q-claim { border: none; border-radius: 11px; padding: 7px 10px; background: linear-gradient(135deg, #f59e0b, #ec4899); color: #fff; font-weight: 900; font-size: 0.72rem; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 1px; flex-shrink: 0; box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4); animation: claimPulse 1.4s ease-in-out infinite; }
+  .q-claim span { font-size: 0.64rem; opacity: 0.95; }
+  @keyframes claimPulse { 50% { box-shadow: 0 4px 22px rgba(236, 72, 153, 0.75), 0 0 0 3px rgba(250, 204, 21, 0.35); filter: brightness(1.12); } }
+  .q-claimed { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: rgba(34, 197, 94, 0.2); color: #86efac; font-weight: 900; flex-shrink: 0; }
+
+  /* ================= МАГАЗИН «СКОРО» ================= */
+  .soon-sheet { position: relative; overflow: hidden; text-align: center; align-items: center; border-color: rgba(96, 165, 250, 0.55); }
+  .soon-ribbon { position: absolute; top: 16px; right: -34px; transform: rotate(35deg); background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; font-weight: 900; font-size: 0.68rem; letter-spacing: 0.18em; padding: 5px 40px; box-shadow: 0 4px 14px rgba(239, 68, 68, 0.4); }
+  .soon-ico { font-size: 3rem; line-height: 1; animation: updFloat 2.6s ease-in-out infinite; filter: drop-shadow(0 8px 16px rgba(59, 130, 246, 0.55)); }
+  .soon-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+  .soon-item { position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 12px 6px; border-radius: 14px; background: rgba(255, 255, 255, 0.05); border: 1px dashed rgba(148, 177, 255, 0.35); overflow: hidden; }
+  .soon-item span { font-size: 1.6rem; filter: grayscale(0.4) brightness(0.8); }
+  .soon-item b { font-size: 0.72rem; color: #cbd5e1; }
+  .soon-item i { position: absolute; top: 5px; right: 7px; font-style: normal; font-size: 0.7rem; }
+  .soon-item::after { content: ''; position: absolute; inset: 0; background: linear-gradient(110deg, transparent 30%, rgba(255, 255, 255, 0.09) 50%, transparent 70%); transform: translateX(-100%); animation: shimmer 2.4s ease-in-out infinite; }
+  @keyframes shimmer { to { transform: translateX(100%); } }
+  .soon-wallet { font-size: 0.85rem; padding: 7px 14px; border-radius: 99px; background: rgba(59, 130, 246, 0.16); border: 1px solid rgba(96, 165, 250, 0.5); }
+  .soon-wallet b { color: #bfdbfe; }
+  .soon-sheet .sheet-stack { width: 100%; }
+  .soon-sheet .soon-hint { font-size: 0.72rem; margin-top: -4px; }
+
+  /* ================= ПРОМОКОД ================= */
+  .code-sheet { text-align: center; align-items: center; }
+  .code-ico { font-size: 2.8rem; line-height: 1; animation: updFloat 2.4s ease-in-out infinite; }
+  .code-input { text-align: center; text-transform: uppercase; letter-spacing: 0.08em; padding: 14px; }
+  .code-sheet .sheet-actions { width: 100%; }
+  .nick-msg.ok { color: #86efac; font-weight: 700; }
+  .planet-badge.code { background: rgba(167, 139, 250, 0.2); color: #ddd6fe; border-color: rgba(167, 139, 250, 0.5); }
+  .btn-buy.code-btn { background: linear-gradient(135deg, #7c3aed, #db2777); box-shadow: 0 4px 14px rgba(124, 58, 237, 0.35); }
+
+  /* окно «Нужно обновление» нельзя закрыть */
+  #updateOverlay.forced { z-index: 900; background: rgba(2, 4, 13, 0.96); }
+  #updateOverlay.forced .update-kicker { color: #fca5a5; }
+
   #loginOverlay { background: radial-gradient(120% 80% at 50% 0%, #17235a 0%, #060b1d 55%, #02040d 100%); backdrop-filter: none; -webkit-backdrop-filter: none; z-index: 300; overflow: hidden; }
   .login-stars, .login-stars::before, .login-stars::after {
     content: ''; position: absolute; inset: 0;
@@ -326,11 +426,15 @@
 
   /* ================= КАРТА ================= */
   #mapOverlay { padding: 0; align-items: stretch; background: radial-gradient(120% 80% at 50% 40%, rgba(20, 28, 70, 0.96), rgba(2, 3, 10, 0.98)); }
-  .map-sheet { width: 100%; max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; padding: calc(12px + var(--safe-top)) 14px calc(14px + var(--safe-bottom)); gap: 10px; overflow-y: auto; animation: popIn 0.35s cubic-bezier(0.2, 1.1, 0.3, 1); }
+  /* вращающиеся орбиты выпирают за край — режем по горизонтали, чтобы экран не уезжал вбок */
+  #mapOverlay { overflow: hidden; }
+  .map-sheet { width: 100%; max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; padding: calc(12px + var(--safe-top)) 14px calc(14px + var(--safe-bottom)); gap: 10px; overflow-x: hidden; overflow-y: auto; touch-action: pan-y; overscroll-behavior: contain; animation: popIn 0.35s cubic-bezier(0.2, 1.1, 0.3, 1); }
   .map-head { display: flex; justify-content: space-between; align-items: center; }
   .map-title { font-weight: 900; font-size: 1.15rem; }
   .map-sub { font-size: 0.7rem; color: var(--text-dim); }
-  .system { position: relative; width: min(92vw, 440px); width: min(92vw, 46dvh, 440px); aspect-ratio: 1; margin: 0 auto; flex-shrink: 0;
+  /* обёртка обрезает невидимые «рычаги» орбит (иначе лист карты уезжал вбок), а отступы оставляют место планетам у края */
+  .system-clip { overflow: hidden; overflow: clip; padding: 48px 0; margin: -14px -14px -12px; display: flex; justify-content: center; pointer-events: none; flex-shrink: 0; }
+  .system { position: relative; width: min(80vw, 420px); width: min(80vw, 44dvh, 420px); aspect-ratio: 1; margin: 0 auto; flex-shrink: 0;
     background-image: radial-gradient(1px 1px at 10% 20%, #fff, transparent), radial-gradient(1px 1px at 80% 15%, #cfe0ff, transparent), radial-gradient(1.5px 1.5px at 30% 85%, #fff, transparent), radial-gradient(1px 1px at 90% 70%, #fff, transparent), radial-gradient(1px 1px at 55% 45%, #bcd0ff, transparent), radial-gradient(1px 1px at 15% 60%, #fff, transparent); }
   .sun { position: absolute; left: 50%; top: 50%; width: 13%; aspect-ratio: 1; border-radius: 50%; transform: translate(-50%, -50%); background: radial-gradient(circle at 40% 40%, #fff7ae, #fbbf24 45%, #f97316 80%); box-shadow: 0 0 30px 10px rgba(251, 191, 36, 0.55), 0 0 80px 30px rgba(249, 115, 22, 0.25); animation: sunPulse 3s ease-in-out infinite; }
   @keyframes sunPulse { 50% { box-shadow: 0 0 40px 14px rgba(251, 191, 36, 0.65), 0 0 100px 40px rgba(249, 115, 22, 0.3); } }
@@ -441,6 +545,10 @@
       <div class="pill" id="astPill">☄️ —</div>
       <button class="pill" id="rankPill" type="button">🏆 —</button>
     </div>
+    <div class="viewport-side">
+      <button class="pill side-btn" id="questBtn" type="button"><span>📜</span><b>Квесты</b><span class="q-badge" id="questBadge" hidden>0</span></button>
+      <button class="pill side-btn" id="shopBtn" type="button"><span>🛒</span><b>Магазин</b></button>
+    </div>
     <div class="era-card">
       <div class="era-top">
         <div>
@@ -516,7 +624,7 @@
       <div><div class="map-title">🪐 Солнечная система</div><div class="map-sub">Выберите планету: перелёт или экспедиция</div></div>
       <button class="btn-icon" id="mapClose" type="button">✕</button>
     </div>
-    <div class="system" id="system"></div>
+    <div class="system-clip"><div class="system" id="system"></div></div>
     <div class="planet-chips" id="planetChips"></div>
     <div class="planet-info" id="planetInfo"></div>
   </div>
@@ -534,12 +642,62 @@
   </div>
 </div>
 
+<!-- ===== Квесты ===== -->
+<div class="overlay" id="questsOverlay">
+  <div class="sheet quests-sheet">
+    <div class="q-head">
+      <div><h2>📜 Квесты</h2><div class="q-sub">Выполняйте задания — получайте сапфиры</div></div>
+      <div class="q-wallet" id="qWallet" title="Сапфиры">🔷 <b id="qSapph">0</b></div>
+      <button class="btn-icon" id="questsClose" type="button">✕</button>
+    </div>
+    <div class="q-body" id="questsBody"></div>
+  </div>
+</div>
+
+<!-- ===== Магазин (скоро) ===== -->
+<div class="overlay" id="shopOverlay">
+  <div class="sheet soon-sheet">
+    <div class="soon-ribbon">СКОРО</div>
+    <div class="soon-ico">🛒</div>
+    <h2>Магазин сапфиров</h2>
+    <p>Скоро здесь появятся особые товары за 🔷 сапфиры. Уже готовим:</p>
+    <div class="soon-grid">
+      <div class="soon-item"><span>🎁</span><b>Сундуки</b><i>🔒</i></div>
+      <div class="soon-item"><span>⚡</span><b>Ускорители</b><i>🔒</i></div>
+      <div class="soon-item"><span>👑</span><b>Редкий образ</b><i>🔒</i></div>
+      <div class="soon-item"><span>🪐</span><b>Сюрприз</b><i>🔒</i></div>
+    </div>
+    <div class="soon-wallet">У вас: 🔷 <b id="shopSapph">0</b> сапфиров</div>
+    <p class="soon-hint">Копите сапфиры заранее — выполняйте квесты.</p>
+    <div class="sheet-stack">
+      <button class="btn-main" id="shopQuests" type="button">📜 К квестам</button>
+      <button class="btn-soft" id="shopCode" type="button">🎁 Ввести промокод</button>
+      <button class="btn-soft" id="shopClose" type="button">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Промокод ===== -->
+<div class="overlay" id="codeOverlay">
+  <div class="sheet code-sheet">
+    <div class="code-ico">🎁</div>
+    <h2>Промокод</h2>
+    <p>Коды раздаются в сообществе игры, у блогеров и на событиях. Каждый код можно активировать на аккаунте один раз.</p>
+    <input class="nick-input code-input" id="codeInput" type="text" maxlength="40" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Например, TERRA-XXXX">
+    <div class="nick-msg" id="codeMsg"></div>
+    <div class="sheet-actions">
+      <button class="btn-soft" id="codeCancel" type="button">Отмена</button>
+      <button class="btn-main" id="codeSubmit" type="button">Активировать</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== Вышло обновление (только в APK) ===== -->
 <div class="overlay" id="updateOverlay" style="z-index: 450;">
   <div class="sheet update-sheet">
     <div class="update-glow"></div>
     <div class="update-ico">🚀</div>
-    <div class="update-kicker">Вышло обновление</div>
+    <div class="update-kicker" id="updateKicker">Вышло обновление</div>
     <h2 id="updateTitle">Terra 3D</h2>
     <p id="updateNotes"></p>
     <div class="update-ver" id="updateVer"></div>

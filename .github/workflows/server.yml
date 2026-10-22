@@ -38,5 +38,7 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          PROMO_CODES: ${{ secrets.PROMO_CODES }}
+          FORCE_UPDATE: ${{ secrets.FORCE_UPDATE }}
           APK_URL: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/terra3d.apk
         run: bash server/deploy.sh

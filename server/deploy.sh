@@ -9,6 +9,8 @@
 #   SESSION_SECRET         любая длинная случайная строка
 #   APK_URL                (необязательно) ссылка «Скачать для Android» на сайте
 #   GITHUB_REPO            (необязательно) «владелец/репозиторий» с релизами APK; в GitHub Actions берётся сам
+#   PROMO_CODES            (необязательно) свои промокоды, по одному в строке
+#   FORCE_UPDATE           (необязательно) 0 — пускать в игру устаревшие версии APK
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -63,8 +65,12 @@ echo "== 4/4 Выкладка"
 REPO="${GITHUB_REPO:-${GITHUB_REPOSITORY:-}}"
 VARS=(--var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}")
 if [ -n "$REPO" ]; then VARS+=(--var "GITHUB_REPO:${REPO}"); fi
+# FORCE_UPDATE=0 — пускать в игру устаревшие APK (по умолчанию играть можно только в последней версии)
+if [ -n "${FORCE_UPDATE:-}" ]; then VARS+=(--var "FORCE_UPDATE:${FORCE_UPDATE}"); fi
 "${WRANGLER[@]}" deploy "${VARS[@]}"
 printf '%s' "$GOOGLE_CLIENT_SECRET" | "${WRANGLER[@]}" secret put GOOGLE_CLIENT_SECRET
 printf '%s' "$SESSION_SECRET" | "${WRANGLER[@]}" secret put SESSION_SECRET
+# свои промокоды (необязательно): секрет PROMO_CODES, формат — в README
+if [ -n "${PROMO_CODES:-}" ]; then printf '%s' "$PROMO_CODES" | "${WRANGLER[@]}" secret put PROMO_CODES; fi
 
 echo "Готово. Адрес сервера — строка с workers.dev выше (его нужно вписать в web/config.js)."

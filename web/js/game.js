@@ -39,7 +39,6 @@ const OFFLINE_EFFICIENCY = 0.5;
 const BOSS_FIRST_MIN = 90, BOSS_FIRST_MAX = 150;
 const BOSS_MIN = 150, BOSS_MAX = 300;
 const BOSS_FLIGHT = 15;
-const REBIRTH_MIN_ERA = 4;           // перерождение — с 5-й эпохи Земли
 const GOLDEN_CHANCE = 0.12;
 
 // ============================================================
@@ -52,18 +51,28 @@ function defaultPlanet(pid) {
   P.buildings.forEach(b => counts[b.id] = 0);
   return { res, counts, era: 0 };
 }
+// Статистика за всё время (не сбрасывается перерождением) — для квестов
+const STAT_KEYS = ['taps', 'built', 'asteroids', 'golden', 'evolves', 'perks', 'travels', 'playSec'];
+function defaultStats() {
+  const st = { maxEra: {} };
+  STAT_KEYS.forEach(k => st[k] = 0);
+  PLANET_ORDER.forEach(pid => st.maxEra[pid] = 0);
+  return st;
+}
+function defaultQuests() { return { day: '', list: [], base: {}, claimed: [], bonus: false, ach: [] }; }
 function defaultState() {
   const planets = {}, ppk = {}, look = {};
   PLANET_ORDER.forEach(pid => { planets[pid] = defaultPlanet(pid); ppk[pid] = {}; look[pid] = { hat: null, bg: null }; });
   const perks = {};
   GLOBAL_PERKS.forEach(p => perks[p.id] = 0);
   return {
-    v: GAME_VERSION, planet: 'earth', unlocked: ['earth'], planets, gems: 0,
-    perks, ppk, rebirths: 0, ownedCosmetics: [], look, lastSave: Date.now()
+    v: GAME_VERSION, planet: 'earth', unlocked: ['earth'], planets, gems: 0, sapphires: 0,
+    perks, ppk, rebirths: 0, ownedCosmetics: [], look, stats: defaultStats(), quests: defaultQuests(), lastSave: Date.now()
   };
 }
 let state = defaultState();
-const ui = { tab: 'a', shopTab: 'hat', mapSel: null };
+const ui = { tab: 'a', shopTab: 'hat', mapSel: null, lbBoard: 'all', lbPeriod: 'all', buyMode: 1 };
+try { const bm = localStorage.getItem('terra_buy_mode'); if (bm) ui.buyMode = bm === 'max' ? 'max' : (BUY_MODES.includes(+bm) ? +bm : 1); } catch (e) {}
 
 const num = (x) => (typeof x === 'number' && isFinite(x) && x >= 0) ? x : 0;
 const int = (x) => Math.max(0, Math.floor(num(x)));
@@ -108,8 +117,21 @@ function applySave(p) {
       d.planet = d.unlocked.includes(p.planet) ? p.planet : 'earth';
       d.ownedCosmetics = Array.isArray(p.ownedCosmetics) ? p.ownedCosmetics : [];
       d.lastSave = Number(p.lastSave) || Date.now();
+      d.sapphires = int(p.sapphires);
+      if (p.stats && typeof p.stats === 'object') {
+        STAT_KEYS.forEach(k => d.stats[k] = num(p.stats[k]));
+        PLANET_ORDER.forEach(pid => d.stats.maxEra[pid] = int((p.stats.maxEra || {})[pid]));
+      }
+      const q = p.quests;
+      if (q && typeof q === 'object') {
+        const strs = (a) => Array.isArray(a) ? a.filter(x => typeof x === 'string').slice(0, 64) : [];
+        d.quests = { day: typeof q.day === 'string' ? q.day : '', list: strs(q.list), claimed: strs(q.claimed), bonus: !!q.bonus, ach: strs(q.ach), base: {} };
+        if (q.base && typeof q.base === 'object') STAT_KEYS.forEach(k => { if (q.base[k] !== undefined) d.quests.base[k] = num(q.base[k]); });
+      }
     }
   }
+  // лучшие эпохи — не ниже текущих (для старых сохранений)
+  PLANET_ORDER.forEach(pid => { if (s.unlocked.includes(pid)) s.stats.maxEra[pid] = Math.max(s.stats.maxEra[pid] || 0, s.planets[pid].era); });
   s.ownedCosmetics = s.ownedCosmetics.filter(id => COSMETICS.some(c => c.id === id));
   PLANET_ORDER.forEach(pid => {
     const l = s.look[pid];
@@ -150,19 +172,41 @@ function spec(pid, cost, mult = 1) {
 }
 function getRes(key) {
   if (key === 'gems') return state.gems;
+  if (key === 'sapphire') return state.sapphires;
   const [pid, r] = key.split(':');
   return state.planets[pid].res[r] || 0;
 }
 function addRes(key, v) {
   if (key === 'gems') { state.gems = Math.max(0, state.gems + v); return; }
+  if (key === 'sapphire') { state.sapphires = Math.max(0, state.sapphires + v); return; }
   const [pid, r] = key.split(':');
   state.planets[pid].res[r] = Math.max(0, (state.planets[pid].res[r] || 0) + v);
 }
 function canPay(s) { if (!s) return false; for (const k in s) if (getRes(k) < s[k]) return false; return true; }
 function pay(s) { for (const k in s) addRes(k, -s[k]); }
-function resIcon(key) { return RES[key === 'gems' ? 'gems' : key.split(':')[1]].icon; }
+function resIcon(key) { return RES[(key === 'gems' || key === 'sapphire') ? key : key.split(':')[1]].icon; }
 
-function buildingCost(pid, b) { return spec(pid, b.cost, Math.pow(1.18, ps(pid).counts[b.id] || 0) * costMult(pid)); }
+// Цена n построек подряд: сумма геометрической прогрессии (каждая следующая дороже на 18%)
+function bulkCost(pid, b, n = 1) {
+  const g = BUILD_GROWTH, c = ps(pid).counts[b.id] || 0;
+  return spec(pid, b.cost, Math.pow(g, c) * (Math.pow(g, n) - 1) / (g - 1) * costMult(pid));
+}
+function buildingCost(pid, b) { return bulkCost(pid, b, 1); }
+// Сколько построек можно купить на имеющиеся ресурсы (не больше cap)
+function maxAffordable(pid, b, cap = 1000) {
+  const g = BUILD_GROWTH, c = ps(pid).counts[b.id] || 0, m = costMult(pid);
+  let n = cap;
+  for (const k in b.cost) {
+    const unit = b.cost[k] * m * Math.pow(g, c);
+    const have = getRes(`${pid}:${k}`);
+    n = Math.min(n, Math.floor(Math.log(have * (g - 1) / unit + 1) / Math.log(g) + 1e-9));
+  }
+  n = Math.max(0, isFinite(n) ? n : 0);
+  while (n > 0 && !canPay(bulkCost(pid, b, n))) n--;   // защита от округления
+  return n;
+}
+// Сколько купит кнопка при текущем режиме (×1/×10/×50/×100/MAX)
+function buyCount(pid, b) { return ui.buyMode === 'max' ? Math.max(1, maxAffordable(pid, b)) : ui.buyMode; }
 function eraCost(pid) {
   const next = PL(pid).eras[ps(pid).era + 1];
   return next ? spec(pid, next.cost, costMult(pid)) : null;
@@ -192,10 +236,22 @@ function unlockInfo(pid) {
   return { reqs, cost, ready: reqs.every(r => r.ok) && canPay(cost) };
 }
 
+// Условия следующего перерождения: каждое требует больше эпох и этапов
+function rebirthReqList() {
+  const R = rebirthRequirements(state.rebirths);
+  return PLANET_ORDER.filter(pid => R[pid] !== undefined).map(pid => {
+    const need = R[pid], P = PL(pid);
+    return { pid, need, ok: isUnlocked(pid) && ps(pid).era >= need,
+      label: `${P.icon} ${P.name}: ${P.stageWord.toLowerCase()} ${need + 1} «${P.eras[need].name}»`,
+      have: isUnlocked(pid) ? ps(pid).era + 1 : 0 };
+  });
+}
+function canRebirth() { return rebirthReqList().every(r => r.ok); }
+
 function getRebirthGemsReward() {
+  if (!canRebirth()) return 0;
   const e = ps('earth').era;
-  if (e < REBIRTH_MIN_ERA) return 0;
-  let r = (e - 3) + Math.floor(Math.log10(Math.max(10, ps('earth').res.solar)) / 2);
+  let r = Math.max(1, e - 3) + Math.floor(Math.log10(Math.max(10, ps('earth').res.solar)) / 2);
   PLANET_ORDER.forEach(pid => { if (pid !== 'earth' && isUnlocked(pid)) r += ps(pid).era; });
   return Math.max(1, r);
 }
@@ -261,7 +317,8 @@ function saveSession() { try { localStorage.setItem('terra_session', JSON.string
 function currentUid() { return session ? session.uid : (demo ? 'demo' : null); }
 
 async function api(path, opts = {}) {
-  const headers = { 'Content-Type': 'application/json' };
+  // X-Terra-Client: эта версия умеет показывать окно «Обновите игру» (ответ 426)
+  const headers = { 'Content-Type': 'application/json', 'X-Terra-Client': String(GAME_VERSION) };
   if (session && session.token) headers.Authorization = 'Bearer ' + session.token;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 12000);
@@ -276,6 +333,7 @@ async function api(path, opts = {}) {
     if (!res.ok) {
       const err = new Error((data && data.error) || ('http_' + res.status));
       err.status = res.status; err.data = data;
+      if (res.status === 426) showForcedUpdate(data && data.latest);
       throw err;
     }
     return data;
@@ -355,7 +413,7 @@ async function startGoogleLogin() {
     const st = b64url(crypto.getRandomValues(new Uint8Array(24)));
     const challenge = b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
     localStorage.setItem(PENDING_KEY, JSON.stringify({ state: st, verifier, t: Date.now() }));
-    url = `${CONFIG.API_URL}/auth/google/start?state=${st}&challenge=${challenge}&app=${IS_APP ? 1 : 0}`;
+    url = `${CONFIG.API_URL}/auth/google/start?state=${st}&challenge=${challenge}&app=${IS_APP ? 1 : 0}${IS_APP ? '&build=' + MY_BUILD : ''}`;
   } catch (e) {
     showLoginError('Этот браузер не поддерживает безопасный вход. Обновите его или откройте игру в Chrome.');
     return;
@@ -398,6 +456,7 @@ async function completeLogin(code, st, error) {
     await enterGame(r.profile, r.save, false);
   } catch (e) {
     session = null;
+    if (e.status === 426) return;
     showLogin(e.status === 401 ? 'Вход не удался или устарел. Попробуйте ещё раз.' : 'Не удалось войти. Проверьте интернет и попробуйте снова.');
   }
 }
@@ -465,6 +524,7 @@ async function enterGame(profile, cloudSave, offlineMode) {
 }
 
 function startPlaying(offline) {
+  if (forcedUpdate) return;
   closeAllOverlays();
   const sec = Math.min((Date.now() - (state.lastSave || Date.now())) / 1000, OFFLINE_MAX_SEC);
   grantOffline(sec);
@@ -520,6 +580,7 @@ async function boot() {
     saveSession();
     await enterGame(me.profile, me.save, false);
   } catch (e) {
+    if (e.status === 426) return;   // версия устарела — уже показано окно обновления
     if (e.status === 401) { clearSession(); session = null; showLogin('Сессия истекла. Войдите снова.'); }
     else if (readLocal(session.uid) && session.nickname) {
       myProfile = { nickname: session.nickname, score: 0, rebirths: 0, era: 0, rank: null };
@@ -608,18 +669,93 @@ async function submitNick() {
   }
 }
 
+// ---------- Промокоды ----------
+// Код проверяет сервер (один раз на аккаунт); награду начисляет игра и сразу сохраняет в облако
+function openCodes() {
+  if (!playing) return;
+  closeAllOverlays();
+  $('codeInput').value = '';
+  setCodeMsg(demo || !session ? 'Промокоды работают только с аккаунтом Google.' : '', !!(demo || !session));
+  $('codeSubmit').disabled = demo || !session;
+  $('codeOverlay').classList.add('open');
+  Sound.ui();
+  setTimeout(() => { try { $('codeInput').focus(); } catch (e) {} }, 250);
+}
+function setCodeMsg(text, bad) { const m = $('codeMsg'); m.textContent = text; m.className = 'nick-msg' + (bad ? ' err' : text ? ' ok' : ''); }
+function applyReward(rw) {
+  const chips = [];
+  if (!rw || typeof rw !== 'object') return chips;
+  if (rw.gems > 0) { state.gems += rw.gems; chips.push(`💎 +${fmt(rw.gems)}`); }
+  if (rw.sapphires > 0) { state.sapphires += rw.sapphires; chips.push(`🔷 +${fmt(rw.sapphires)}`); }
+  for (const k in (rw.res || {})) {
+    const [pid, r] = k.split(':'), v = num(rw.res[k]);
+    if (PLANETS[pid] && PL(pid).res.includes(r) && v > 0) { ps(pid).res[r] += v; chips.push(`${RES[r].icon} +${fmt(v)}`); }
+  }
+  if (rw.all > 0) { state.unlocked.forEach(pid => PL(pid).res.forEach(r => ps(pid).res[r] += rw.all)); chips.push(`🪐 +${fmt(rw.all)} каждого ресурса`); }
+  (rw.items || []).forEach(id => {
+    const c = COSMETICS.find(x => x.id === id);
+    if (c && !state.ownedCosmetics.includes(id)) { state.ownedCosmetics.push(id); chips.push(`${c.icon} ${c.name}`); }
+  });
+  return chips;
+}
+const CODE_ERRORS = {
+  invalid_code: 'Такого кода нет. Проверьте написание.',
+  already_used: 'Вы уже активировали этот код.',
+  code_expired: 'Срок действия кода закончился.',
+  code_exhausted: 'Этот код уже использовали максимальное число раз.',
+  too_many_attempts: 'Слишком много попыток. Подождите 10 минут.',
+  bad_request: 'Введите код.'
+};
+async function submitCode() {
+  const code = $('codeInput').value.trim();
+  if (!code) { setCodeMsg('Введите код', true); return; }
+  if (!canSync()) { setCodeMsg(clientOutdated ? 'Обновите игру, чтобы вводить коды.' : 'Нужен вход через Google и интернет.', true); return; }
+  $('codeSubmit').disabled = true; setCodeMsg('Проверяем…');
+  try {
+    const r = await api('/api/redeem', { method: 'POST', body: { code } });
+    const chips = applyReward(r.reward);
+    $('codeOverlay').classList.remove('open');
+    Sound.unlock(); vibrate([30, 40, 30]);
+    saveLocal(); await syncNow();
+    showCinema({ kicker: 'Промокод активирован', big: '🎁', title: r.title || 'Подарок', desc: r.text || 'Награда уже у вас!', color: '#a78bfa', chips });
+    renderAll();
+  } catch (e) {
+    Sound.error();
+    setCodeMsg(e.status === 401 ? 'Сессия истекла — войдите снова.' : (CODE_ERRORS[e.message] || 'Не удалось проверить код. Проверьте интернет.'), true);
+  } finally { $('codeSubmit').disabled = false; }
+}
+
 // ---------- Вышло обновление (только в APK) ----------
 // Сервер знает номер последней сборки (version.json из релиза на GitHub) и сравнивает его с нашим.
-let updateInfo = null, updateShownBuild = 0, updateRetry = null;
+let updateInfo = null, updateShownBuild = 0, updateRetry = null, forcedUpdate = false;
 async function checkUpdate(force = false) {
   if (!IS_APP || !MY_BUILD || !CONFIGURED) return;
   try {
     const r = await api('/api/client');
     if (r && r.update && r.latest && r.latest.build > MY_BUILD) {
       updateInfo = r.latest;
-      maybeShowUpdate(force);
+      if (r.required) showForcedUpdate(r.latest); else maybeShowUpdate(force);
     }
   } catch (e) {}
+}
+// Версия устарела, сервер больше не пускает: играть нельзя, только обновиться
+function showForcedUpdate(latest) {
+  if (latest && latest.build) updateInfo = latest;
+  if (forcedUpdate) return;
+  forcedUpdate = true;
+  if (playing) { saveLocal(); playing = false; }
+  endAsteroid(true);
+  clearTimeout(updateRetry);
+  closeAllOverlays();
+  if (cinemaOpen) { cinemaQueue.length = 0; cinemaShownAt = 0; closeCinema(); }
+  $('loginOverlay').classList.remove('open');
+  $('updateKicker').textContent = 'Нужно обновление';
+  $('updateTitle').innerText = 'Terra 3D ' + ((updateInfo && updateInfo.version) || '');
+  $('updateNotes').innerText = 'Эта версия игры устарела — играть можно только в новой. ' + ((updateInfo && updateInfo.notes) ? 'Что нового: ' + updateInfo.notes : '');
+  $('updateVer').innerText = MY_BUILD ? 'У вас версия 1.0.' + MY_BUILD : 'У вас старая версия';
+  $('updateLater').hidden = true;
+  $('updateOverlay').classList.add('forced', 'open');
+  Sound.alarm();
 }
 function screenBusy() {
   return cinemaOpen || traveling || !!document.querySelector('.overlay.open');
@@ -638,7 +774,7 @@ function maybeShowUpdate(force = false) {
 }
 function downloadUpdate() {
   const url = (updateInfo && updateInfo.url) || CONFIG.APK_URL;
-  $('updateOverlay').classList.remove('open');
+  if (!forcedUpdate) $('updateOverlay').classList.remove('open');
   if (!url) return;
   if (playing) { saveLocal(); syncNow(true); }
   try { window.TerraNative.openExternal(url); } catch (e) { location.href = url; }
@@ -647,7 +783,10 @@ function downloadUpdate() {
 setInterval(() => { if (playing && !document.hidden) checkUpdate(); }, 30 * 60 * 1000);
 
 // ---------- Диалоги ----------
-function closeAllOverlays() { ['nickOverlay', 'profileOverlay', 'confirmOverlay', 'loginOverlay', 'mapOverlay', 'updateOverlay'].forEach(id => $(id).classList.remove('open')); }
+function closeAllOverlays() {
+  ['nickOverlay', 'profileOverlay', 'confirmOverlay', 'loginOverlay', 'mapOverlay', 'questsOverlay', 'shopOverlay', 'codeOverlay'].forEach(id => $(id).classList.remove('open'));
+  if (!forcedUpdate) $('updateOverlay').classList.remove('open');
+}
 function askConfirm({ title, text, ok = 'Да', cancel = 'Отмена', danger = false }) {
   return new Promise((resolve) => {
     $('confirmTitle').innerText = title;
@@ -681,6 +820,7 @@ function openProfile() {
     </div>
     <div class="sheet-stack">
       ${updateInfo ? `<button class="btn-main" id="pfUpdate" type="button">⬆️ Обновить до ${esc(updateInfo.version)}</button>` : ''}
+      <button class="btn-soft" id="pfCode" type="button">🎁 Ввести промокод</button>
       <button class="btn-soft" id="pfSound" type="button">${Sound.enabled ? '🔊 Звук включён' : '🔇 Звук выключен'}</button>
       ${online ? '<button class="btn-soft" id="pfLogout" type="button">Выйти из аккаунта</button>' : ''}
       <button class="btn-soft danger" id="pfReset" type="button">Сбросить прогресс</button>
@@ -691,6 +831,7 @@ function openProfile() {
   $('pfClose').onclick = () => $('profileOverlay').classList.remove('open');
   $('pfSound').onclick = () => { toggleSound(); $('pfSound').innerText = Sound.enabled ? '🔊 Звук включён' : '🔇 Звук выключен'; };
   $('pfReset').onclick = resetGame;
+  $('pfCode').onclick = openCodes;
   if (updateInfo) $('pfUpdate').onclick = () => { $('profileOverlay').classList.remove('open'); downloadUpdate(); };
   if (online) { $('pfLogout').onclick = () => { $('profileOverlay').classList.remove('open'); logout(); }; $('pfDelete').onclick = deleteAccount; }
   $('profileOverlay').classList.add('open');
@@ -722,41 +863,84 @@ async function deleteAccount() {
 }
 
 // ---------- Рейтинг ----------
+// Доски: общий и по планетам; периоды: неделя и всё время
 let lbData = null, lbLoading = false, lbError = false, lbVer = 0;
 async function fetchLeaderboard() {
   if (!CONFIGURED || demo || !session) return;
+  const key = ui.lbBoard + ':' + ui.lbPeriod;
   lbLoading = true; lbVer++;
   if (ui.tab === 'top') renderPanel();
-  try { lbData = await api('/api/leaderboard?limit=50'); lbError = false; }
-  catch (e) { lbError = true; }
+  try {
+    const d = await api(`/api/leaderboard?limit=50&board=${ui.lbBoard}&period=${ui.lbPeriod}`);
+    if (key === ui.lbBoard + ':' + ui.lbPeriod) { lbData = d; lbError = false; }
+  } catch (e) { if (key === ui.lbBoard + ':' + ui.lbPeriod) lbError = true; }
   lbLoading = false; lbVer++;
   if (ui.tab === 'top') renderPanel();
 }
 setInterval(() => { if (playing && ui.tab === 'top' && !document.hidden) fetchLeaderboard(); }, 30000);
+function setLeaderboard(board, period) {
+  if (board === ui.lbBoard && period === ui.lbPeriod) return;
+  ui.lbBoard = board; ui.lbPeriod = period;
+  lbData = null; lbError = false;
+  Sound.ui();
+  fetchLeaderboard();
+}
+function fmtLeft(ms) {
+  const h = Math.max(0, Math.floor(ms / 3600000)), d = Math.floor(h / 24);
+  return d > 0 ? `${d} д ${h % 24} ч` : `${h} ч ${Math.max(0, Math.floor(ms / 60000) % 60)} мин`;
+}
+function lbStat(p, board, period) {
+  if (board === 'all') return period === 'week'
+    ? `<span class="lb-pts">+${fmt(p.score)}</span><span>очков</span>`
+    : `<span>🌀 ${p.rebirths}</span><span>Эпоха ${p.era + 1}</span>`;
+  return `<span>${PL(board).stageWord} ${p.era + 1}</span><span>🏗 ${fmt(p.buildings)}</span>`;
+}
 
 function renderLeaderboardHtml() {
   if (!CONFIGURED || demo) {
     return `<div class="empty"><div class="empty-ico">🏆</div><div class="empty-title">Рейтинг недоступен</div><div class="empty-text">Войдите через Google, чтобы соревноваться с другими игроками.</div></div>`;
   }
-  const me = myProfile;
-  let html = `<div class="lb-head"><div><div class="lb-title">🏆 Топ игроков</div><div class="lb-sub">${lbData ? 'Игроков в рейтинге: ' + lbData.total : 'Загрузка…'} · перерождения, затем эпоха Земли</div></div><button class="btn-icon" data-action="lbrefresh" type="button">⟳</button></div>`;
+  const board = ui.lbBoard, period = ui.lbPeriod, me = myProfile;
+  const d = lbData && lbData.board === board && lbData.period === period ? lbData : null;
+  const boardName = board === 'all' ? 'Общий топ' : `Топ: ${PL(board).name}`;
+  const note = board === 'all'
+    ? (period === 'week' ? 'Очки, набранные с понедельника' : 'Перерождение — 10 очков, эпоха Земли — 1')
+    : (period === 'week' ? 'Лучший результат на этой неделе' : 'Лучший этап и число построек');
+  let html = `<div class="lb-head"><div><div class="lb-title">🏆 ${boardName}</div><div class="lb-sub">${d ? 'Игроков: ' + fmt(d.total) + ' · ' : ''}${note}</div></div><button class="btn-icon" data-action="lbrefresh" type="button">⟳</button></div>
+    <div class="lb-boards">${['all', ...PLANET_ORDER].map(b => `<button class="lb-board ${b === board ? 'active' : ''}" data-action="lbboard" data-id="${b}" type="button">${b === 'all' ? '🏆 Общий' : PL(b).icon + ' ' + PL(b).name}</button>`).join('')}</div>
+    <div class="seg lb-period">
+      <button class="seg-btn ${period === 'week' ? 'active' : ''}" data-action="lbperiod" data-id="week" type="button">📅 За неделю</button>
+      <button class="seg-btn ${period === 'all' ? 'active' : ''}" data-action="lbperiod" data-id="all" type="button">♾️ За всё время</button>
+    </div>`;
+  if (period === 'week' && d && d.week) html += `<div class="lb-week">⏳ Неделя закончится через ${fmtLeft(d.week.endsAt - Date.now())} — тогда топ начнётся заново</div>`;
   if (me) {
-    html += `<div class="lb-me"><div class="lb-me-rank">${me.rank ? '#' + me.rank : '—'}</div><div class="avatar" style="${avatarStyle(me.nickname)}">${esc(initialOf(me.nickname))}</div><div class="lb-me-info"><div class="lb-me-name">${esc(me.nickname)}</div><div class="lb-me-stat">🌀 ${state.rebirths} ${plural(state.rebirths, 'перерождение', 'перерождения', 'перерождений')} · Эпоха ${ps('earth').era + 1} · 🪐 ${state.unlocked.length}</div></div></div>`;
+    let rank = '—', stat;
+    if (board === 'all' && period === 'all') {
+      rank = me.rank ? '#' + me.rank : '—';
+      stat = `🌀 ${state.rebirths} ${plural(state.rebirths, 'перерождение', 'перерождения', 'перерождений')} · Эпоха ${ps('earth').era + 1} · 🪐 ${state.unlocked.length}`;
+    } else {
+      const m = d && d.me;
+      if (m && m.rank) rank = '#' + m.rank;
+      if (board === 'all') stat = m ? `+${fmt(m.score)} очков за неделю` : 'На этой неделе пока без очков';
+      else if (!isUnlocked(board)) stat = `🔒 Планета ещё не открыта`;
+      else stat = m ? `${PL(board).stageWord} ${m.era + 1} · 🏗 ${fmt(m.buildings)} построек` : 'Пока без результата';
+    }
+    html += `<div class="lb-me"><div class="lb-me-rank">${rank}</div><div class="avatar" style="${avatarStyle(me.nickname)}">${esc(initialOf(me.nickname))}</div><div class="lb-me-info"><div class="lb-me-name">${esc(me.nickname)}</div><div class="lb-me-stat">${stat}</div></div></div>`;
   }
-  if (lbData && lbData.players.length) {
+  if (d && d.players.length) {
     const myLc = me ? me.nickname.toLowerCase() : '';
-    html += lbData.players.map((p, i) => {
+    html += d.players.map((p, i) => {
       const rank = i + 1;
       const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank;
       const mine = p.nickname.toLowerCase() === myLc;
-      return `<div class="lb-row ${rank <= 3 ? 'top' + rank : ''} ${mine ? 'mine' : ''}" style="--i:${Math.min(i, 12)}"><div class="lb-rank">${medal}</div><div class="avatar sm" style="${avatarStyle(p.nickname)}">${esc(initialOf(p.nickname))}</div><div class="lb-name">${esc(p.nickname)}${mine ? '<span class="you">вы</span>' : ''}</div><div class="lb-stat"><span>🌀 ${p.rebirths}</span><span>Эпоха ${p.era + 1}</span></div></div>`;
+      return `<div class="lb-row ${rank <= 3 ? 'top' + rank : ''} ${mine ? 'mine' : ''}" style="--i:${Math.min(i, 12)}"><div class="lb-rank">${medal}</div><div class="avatar sm" style="${avatarStyle(p.nickname)}">${esc(initialOf(p.nickname))}</div><div class="lb-name">${esc(p.nickname)}${mine ? '<span class="you">вы</span>' : ''}</div><div class="lb-stat">${lbStat(p, board, period)}</div></div>`;
     }).join('');
-  } else if (lbLoading) {
+  } else if (lbLoading || (!d && !lbError)) {
     html += '<div class="skeleton"></div>'.repeat(6);
   } else if (lbError) {
     html += `<div class="empty"><div class="empty-ico">📡</div><div class="empty-title">Не удалось загрузить</div><div class="empty-text">Проверьте интернет и нажмите ⟳</div></div>`;
   } else {
-    html += `<div class="empty"><div class="empty-ico">🌌</div><div class="empty-title">Пока пусто</div><div class="empty-text">Станьте первым в рейтинге!</div></div>`;
+    html += `<div class="empty"><div class="empty-ico">🌌</div><div class="empty-title">Пока пусто</div><div class="empty-text">${period === 'week' ? 'На этой неделе ещё никто не набрал очков — станьте первым!' : 'Станьте первым в рейтинге!'}</div></div>`;
   }
   return html;
 }
@@ -1103,6 +1287,57 @@ function drawMoons(R, front, now) {
   });
 }
 
+// ---------- Постройки на поверхности планеты ----------
+// Каждая постройка получает до 3 «мест» на сфере: 1 значок с первой штуки, 2 — с 10, 3 — с 50.
+const SURFACE_SLOTS = (() => {
+  const N = 72, pts = [];
+  for (let i = 0; i < N; i++) pts.push({ lat: Math.asin((1 - 2 * (i + 0.5) / N) * 0.8), lon: (i * 2.399963) % (Math.PI * 2) });
+  let seed = 20261022;
+  for (let i = N - 1; i > 0; i--) { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; const j = seed % (i + 1); [pts[i], pts[j]] = [pts[j], pts[i]]; }
+  return pts;
+})();
+const spriteCache = new Map();
+function emojiSprite(icon) {
+  let c = spriteCache.get(icon);
+  if (!c) {
+    c = document.createElement('canvas'); c.width = c.height = 64;
+    const x = c.getContext('2d');
+    x.font = '46px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText(icon, 32, 35);
+    spriteCache.set(icon, c);
+  }
+  return c;
+}
+function drawSurfaceBuildings(R, pid) {
+  const counts = ps(pid).counts, items = [];
+  PL(pid).buildings.forEach((b, bi) => {
+    const c = counts[b.id] || 0;
+    const marks = c <= 0 ? 0 : c < 10 ? 1 : c < 50 ? 2 : 3;
+    for (let j = 0; j < marks; j++) {
+      const sp = SURFACE_SLOTS[(bi * 3 + j) % SURFACE_SLOTS.length];
+      let lon = (sp.lon + rotAngle) % (Math.PI * 2);
+      if (lon > Math.PI) lon -= Math.PI * 2;
+      const z = Math.cos(lon) * Math.cos(sp.lat);   // насколько место повёрнуто к нам
+      if (z < 0.15) continue;
+      items.push({ x: cx + Math.sin(lon) * Math.cos(sp.lat) * R, y: cy + Math.sin(sp.lat) * R, z, icon: b.icon });
+    }
+  });
+  if (!items.length) return;
+  items.sort((a, b) => a.z - b.z);
+  const base = Math.max(12, R * 0.17);
+  items.forEach(it => {
+    const sz = base * (0.55 + 0.45 * it.z);
+    // ночная сторона (справа снизу) — значки тусклее, у края диска — исчезают
+    const night = Math.max(0, Math.min(1, ((it.x - cx) * 0.6 + (it.y - cy) * 0.5) / R + 0.25));
+    ctx.globalAlpha = Math.min(1, (it.z - 0.15) / 0.25) * (1 - night * 0.55);
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.beginPath(); ctx.ellipse(it.x, it.y + sz * 0.38, sz * 0.42, sz * 0.14, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.drawImage(emojiSprite(it.icon), it.x - sz / 2, it.y - sz / 2, sz, sz);
+  });
+  ctx.globalAlpha = 1;
+}
+
 function renderFrame(now) {
   requestAnimationFrame(renderFrame);
   const dt = Math.min(0.1, Math.max(0, (now - lastFrameTime) / 1000));
@@ -1179,6 +1414,7 @@ function renderFrame(now) {
     sp.addColorStop(0, 'rgba(255,255,255,0.32)'); sp.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = sp; ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
   }
+  drawSurfaceBuildings(R, pid);
   if (L && L.lights) drawLights(R, CONTINENT_BLOBS, L.lights);
   if (planetFlash > 0.01) { ctx.fillStyle = `rgba(248,113,113,${planetFlash * 0.5})`; ctx.fillRect(cx - R, cy - R, R * 2, R * 2); planetFlash *= Math.pow(0.9, f); }
   if (evolveFx > 0.01) { ctx.fillStyle = `rgba(255,255,255,${evolveFx * 0.7})`; ctx.fillRect(cx - R, cy - R, R * 2, R * 2); }
@@ -1281,7 +1517,7 @@ function spawnAsteroid() {
   const golden = Math.random() < GOLDEN_CHANCE;
   const hp = clickGain() * (golden ? 18 : 14);
   const fromLeft = Math.random() > 0.5;
-  const sx = fromLeft ? 52 : cw - 52, sy = 74;
+  const sx = fromLeft ? 52 : cw - 52, sy = 108;   // ниже кнопок «Квесты» и «Магазин»
   activeAsteroid = {
     sx, sy, x: sx, y: sy, px: sx, py: sy,
     // контрольная точка кривой — полёт по дуге
@@ -1410,6 +1646,7 @@ function destroyAsteroid() {
   ripples.push({ x: a.x, y: a.y, r: 2, life: 1, color: '#fb923c', speed: 3.2, width: 3, decay: 0.035 });
   shake = 6;
   const gems = a.gems;
+  stat('asteroids'); if (a.golden) stat('golden');
   const res = PL(pid).clickRes;
   const bonus = Math.max(clickGain() * 40, Math.ceil(rates(pid)[res] * 45));
   state.gems += gems;
@@ -1426,17 +1663,20 @@ function destroyAsteroid() {
 // летящие к шапке значки награды
 function flyIcons(x, y, icon, n) {
   const vp = $('viewport').getBoundingClientRect();
-  const target = document.querySelector('.res-gems');
+  flyAbs(vp.left + x, vp.top + y, icon, n, document.querySelector('.res-gems'));
+}
+// значки летят из точки (px, py) экрана к элементу target
+function flyAbs(px, py, icon, n, target) {
   if (!target) return;
   const tr = target.getBoundingClientRect();
   for (let i = 0; i < n; i++) {
     const el = document.createElement('div');
     el.className = 'fly-icon';
     el.textContent = icon;
-    el.style.left = (vp.left + x) + 'px';
-    el.style.top = (vp.top + y) + 'px';
-    el.style.setProperty('--dx', (tr.left + tr.width / 2 - vp.left - x + (Math.random() - 0.5) * 20) + 'px');
-    el.style.setProperty('--dy', (tr.top + tr.height / 2 - vp.top - y) + 'px');
+    el.style.left = px + 'px';
+    el.style.top = py + 'px';
+    el.style.setProperty('--dx', (tr.left + tr.width / 2 - px + (Math.random() - 0.5) * 20) + 'px');
+    el.style.setProperty('--dy', (tr.top + tr.height / 2 - py) + 'px');
     el.style.animationDelay = (i * 60) + 'ms';
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 1200 + i * 60);
@@ -1468,6 +1708,7 @@ function handlePlanetClick(mx, my) {
   if (crit > 1) vibrate(20);
   Sound.tap(crit > 1);
   showFloat(mx - 24, my - 28, `+${fmt(gain)} ${RES[res].icon}${crit > 1 ? ' КРИТ!' : ''}`, crit > 1 ? 'crit' : '');
+  stat('taps');
   refreshUI();
 }
 
@@ -1492,14 +1733,25 @@ function buyBuilding(id) {
   const pid = cur();
   const b = PL(pid).buildings.find(x => x.id === id);
   if (!b || b.u > ps(pid).era) return;
-  const cost = buildingCost(pid, b);
+  const n = buyCount(pid, b);
+  const cost = bulkCost(pid, b, n);
   if (!canPay(cost)) { Sound.error(); return; }
   pay(cost);
-  ps(pid).counts[id] = (ps(pid).counts[id] || 0) + 1;
-  vibrate(8); Sound.buy();
+  ps(pid).counts[id] = (ps(pid).counts[id] || 0) + n;
+  stat('built', n);
+  vibrate(n > 1 ? 18 : 8); Sound.buy();
+  if (n > 1) spawnParticles(cx, cy, PL(pid).eras[ps(pid).era].halo, Math.min(30, 6 + n / 4), 4, 3);
   renderAll();
-  markBought(`[data-card="${id}"]`, '+1');
+  markBought(`[data-card="${id}"]`, '+' + n);
   saveLocal();
+}
+function setBuyMode(m) {
+  m = m === 'max' ? 'max' : (BUY_MODES.includes(+m) ? +m : 1);
+  if (ui.buyMode === m) return;
+  ui.buyMode = m;
+  try { localStorage.setItem('terra_buy_mode', String(m)); } catch (e) {}
+  Sound.ui();
+  renderPanel();
 }
 function buyPerk(id) {
   const p = GLOBAL_PERKS.find(x => x.id === id);
@@ -1510,6 +1762,7 @@ function buyPerk(id) {
   if (state.gems < cost) { Sound.error(); return; }
   state.gems -= cost;
   state.perks[id] = lvl + 1;
+  stat('perks');
   spawnParticles(cx, cy, '#c084fc', 20);
   Sound.unlock();
   renderAll(); markBought(`[data-card="perk-${id}"]`, '⬆');
@@ -1525,6 +1778,7 @@ function buyPlanetPerk(id) {
   if (state.gems < cost) { Sound.error(); return; }
   state.gems -= cost;
   state.ppk[pid][id] = lvl + 1;
+  stat('perks');
   spawnParticles(cx, cy, PL(pid).eras[ps(pid).era].halo, 20);
   Sound.unlock();
   renderAll(); markBought(`[data-card="pp-${id}"]`, '⬆');
@@ -1535,9 +1789,12 @@ function evolveEra() {
   const pid = cur();
   const cost = eraCost(pid);
   if (!cost || !canPay(cost)) { Sound.error(); return; }
+  const couldRebirth = canRebirth();
   pay(cost);
   ps(pid).era++;
   const era = ps(pid).era;
+  stat('evolves');
+  state.stats.maxEra[pid] = Math.max(state.stats.maxEra[pid] || 0, era);
   const E = PL(pid).eras[era];
   evolveFx = 1; evolveColor = E.halo; pulseScale = 1.12;
   spawnParticles(cx, cy, E.halo, 40, 6, 4);
@@ -1549,22 +1806,25 @@ function evolveEra() {
     big: String(era + 1), title: E.name, desc: E.desc, color: E.halo,
     chips: unlocks.map(b => `${b.icon} ${b.name}`),
     extra: (pid === 'earth' && PLANETS.mars.unlock.earthEra === era && !isUnlocked('mars')) ? '🚀 Открыта экспедиция на Марс — загляните на карту!'
-         : (pid === 'earth' && era === REBIRTH_MIN_ERA && state.rebirths === 0) ? '🌀 Теперь доступно перерождение — раздел «Престиж»' : ''
+         : (!couldRebirth && canRebirth()) ? '🌀 Теперь доступно перерождение — раздел «Престиж»' : ''
   });
   renderAll(); saveLocal(); queueSync(800);
 }
 
 async function performRebirth() {
-  if (ps('earth').era < REBIRTH_MIN_ERA) return;
+  if (!canRebirth()) return;
   const reward = getRebirthGemsReward();
+  const next = rebirthRequirements(state.rebirths + 1);
+  const nextTxt = PLANET_ORDER.filter(p => next[p] !== undefined).map(p => `${PL(p).name} — ${next[p] + 1}`).join(', ');
   const ok = await askConfirm({
     title: '🌀 Перерождение',
-    text: `Ресурсы, постройки и эпохи всех планет сбросятся (открытые планеты останутся). Вы получите +${reward} 💎, а доход и сила тапа вырастут до ×${rebirthMult() + 1}. Продолжить?`,
+    text: `Ресурсы, постройки и эпохи всех планет сбросятся (открытые планеты, кристаллы, сапфиры и образ останутся). Вы получите +${reward} 💎, а доход и сила тапа вырастут до ×${rebirthMult() + 1}.\n\nСледующее перерождение потребует больше: ${nextTxt}.`,
     ok: 'Переродиться'
   });
-  if (!ok || ps('earth').era < REBIRTH_MIN_ERA) return;
+  if (!ok || !canRebirth()) return;
   state.gems += reward;
   state.rebirths += 1;
+  PLANET_ORDER.forEach(pid => { state.stats.maxEra[pid] = Math.max(state.stats.maxEra[pid] || 0, ps(pid).era); });
   PLANET_ORDER.forEach(pid => { state.planets[pid] = defaultPlanet(pid); });
   const starter = perk('starter_pack') * 300;
   ['solar', 'water', 'air'].forEach(r => ps('earth').res[r] += starter);
@@ -1573,7 +1833,9 @@ async function performRebirth() {
   spawnParticles(cx, cy, '#c084fc', 50, 7, 4);
   vibrate([40, 60, 40]);
   Sound.rebirth();
-  showCinema({ kicker: 'Квантовое перерождение', big: '🌀', title: `Доход ×${rebirthMult()}`, desc: `Вселенная началась заново, но вы стали сильнее. +${reward} 💎 на перки.`, color: '#c084fc', chips: [] });
+  const nr = rebirthReqList();
+  showCinema({ kicker: `Перерождение №${state.rebirths}`, big: '🌀', title: `Доход ×${rebirthMult()}`, desc: `Вселенная началась заново, но вы стали сильнее. +${reward} 💎 на перки.`, color: '#c084fc',
+    chips: [], extra: 'Для следующего перерождения: ' + nr.map(r => `${PL(r.pid).icon} ${PL(r.pid).stageWord.toLowerCase()} ${r.need + 1}`).join(', ') });
   onPlanetChanged(); saveLocal(); queueSync(500);
 }
 
@@ -1582,7 +1844,7 @@ function handleCosmetic(id) {
   if (!item) return;
   const pid = cur();
   if (!state.ownedCosmetics.includes(id)) {
-    if (item.planet && !isUnlocked(item.planet)) { Sound.error(); return; }
+    if (item.code || (item.planet && !isUnlocked(item.planet))) { Sound.error(); return; }
     if (!canPay(item.cost)) { Sound.error(); return; }
     pay(item.cost);
     state.ownedCosmetics.push(id);
@@ -1607,6 +1869,126 @@ function launchExpedition(pid) {
   Sound.unlock();
   closeMap();
   travelTo(pid, true);
+}
+
+// ============================================================
+//  КВЕСТЫ И САПФИРЫ
+// ============================================================
+function stat(k, n = 1) { state.stats[k] = (state.stats[k] || 0) + n; }
+function dayKey(d = new Date()) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function hashStr(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+function questAvailable(q) {
+  if (q.need === 'planets') return state.unlocked.length > 1;
+  if (q.need === 'gems') return state.gems > 0 || state.rebirths > 0;
+  if (q.need === 'evolve') return PLANET_ORDER.some(pid => isUnlocked(pid) && ps(pid).era < PL(pid).eras.length - 1);
+  return true;
+}
+// Новый день — новые задания; выбор фиксируется до полуночи
+function ensureQuestDay() {
+  const today = dayKey(), Q = state.quests;
+  if (Q.day === today && Q.list.length) return false;
+  let seed = hashStr(today + '|' + (currentUid() || ''));
+  const pool = DAILY_QUESTS.filter(questAvailable), list = [];
+  while (list.length < DAILY_COUNT && pool.length) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    const q = pool.splice(seed % pool.length, 1)[0];
+    if (list.some(id => DAILY_QUESTS.find(x => x.id === id).stat === q.stat)) continue; // два задания на одно и то же — скучно
+    list.push(q.id);
+  }
+  const base = {};
+  STAT_KEYS.forEach(k => base[k] = state.stats[k] || 0);
+  state.quests = { ...Q, day: today, list, base, claimed: [], bonus: false };
+  return true;
+}
+function dailyProgress(q) {
+  const B = state.quests.base;
+  if (q.stat === 'minutes') return Math.floor(((state.stats.playSec || 0) - (B.playSec || 0)) / 60);
+  return Math.floor((state.stats[q.stat] || 0) - (B[q.stat] || 0));
+}
+function achValue(a) {
+  if (a.kind === 'stat') return state.stats[a.key] || 0;
+  if (a.kind === 'era') return isUnlocked(a.key) ? Math.max(state.stats.maxEra[a.key] || 0, ps(a.key).era) + 1 : 0;
+  if (a.kind === 'rebirths') return state.rebirths;
+  if (a.kind === 'planet') return isUnlocked(a.key) ? 1 : 0;
+  if (a.kind === 'style') return state.ownedCosmetics.length;
+  return 0;
+}
+function questState() {
+  ensureQuestDay();
+  const Q = state.quests;
+  const daily = Q.list.map(id => DAILY_QUESTS.find(q => q.id === id)).filter(Boolean).map(q => {
+    const p = Math.max(0, Math.min(q.n, dailyProgress(q)));
+    return { q, p, done: p >= q.n, claimed: Q.claimed.includes(q.id) };
+  });
+  const ach = ACHIEVEMENTS.map(a => { const v = achValue(a); return { a, v: Math.min(a.goal, v), done: v >= a.goal, claimed: Q.ach.includes(a.id) }; });
+  const allDone = daily.length > 0 && daily.every(d => d.claimed);
+  return { daily, ach, bonusReady: allDone && !Q.bonus, bonusClaimed: Q.bonus, dailyClaimed: daily.filter(d => d.claimed).length };
+}
+function claimableCount(Q = questState()) {
+  return Q.daily.filter(d => d.done && !d.claimed).length + (Q.bonusReady ? 1 : 0) + Q.ach.filter(x => x.done && !x.claimed).length;
+}
+function updateQuestBadge() {
+  const n = claimableCount();
+  if (updateQuestBadge.n === n) return;
+  updateQuestBadge.n = n;
+  const b = $('questBadge');
+  b.hidden = n === 0; b.textContent = n;
+  $('questBtn').classList.toggle('glow', n > 0);
+}
+function claimQuest(kind, id, btn) {
+  const Q = questState();
+  let reward = 0;
+  if (kind === 'daily') {
+    const d = Q.daily.find(x => x.q.id === id);
+    if (!d || !d.done || d.claimed) return;
+    state.quests.claimed.push(id); reward = d.q.reward;
+  } else if (kind === 'bonus') {
+    if (!Q.bonusReady) return;
+    state.quests.bonus = true; reward = DAILY_BONUS;
+  } else {
+    const x = Q.ach.find(y => y.a.id === id);
+    if (!x || !x.done || x.claimed) return;
+    state.quests.ach.push(id); reward = x.a.reward;
+  }
+  state.sapphires += reward;
+  Sound.coin(); vibrate(20);
+  if (btn) { const r = btn.getBoundingClientRect(); flyAbs(r.left + r.width / 2, r.top + r.height / 2, '🔷', Math.min(6, reward + 2), $('qWallet')); }
+  setTimeout(() => { const w = $('qWallet'); w.classList.remove('pop'); void w.offsetWidth; w.classList.add('pop'); }, 650);
+  renderQuests(); renderHeaderAndEra(); updateQuestBadge();
+  saveLocal(); queueSync(1500);
+}
+function openQuests() { if (!playing) return; renderQuests(); $('questsOverlay').classList.add('open'); $('questsBody').scrollTop = 0; Sound.ui(); }
+function questRow(kind, id, icon, title, sub, p, goal, reward, done, claimed, i) {
+  const pct = Math.round(Math.min(1, p / goal) * 100);
+  const btn = claimed ? `<div class="q-claimed">✓</div>`
+    : done ? `<button class="q-claim" data-qkind="${kind}" data-qid="${id}" type="button">Забрать<span>+${reward} 🔷</span></button>`
+    : `<div class="q-reward">${reward} 🔷</div>`;
+  return `<div class="q-row ${done && !claimed ? 'ready' : ''} ${claimed ? 'claimed' : ''}" style="--i:${i}">
+    <div class="q-ico">${icon}</div>
+    <div class="q-info"><div class="q-title">${esc(title)}</div>${sub ? `<div class="q-desc">${esc(sub)}</div>` : ''}
+      <div class="q-bar"><i style="width:${pct}%"></i></div><div class="q-prog">${fmt(Math.min(p, goal))} / ${fmt(goal)}</div></div>
+    ${btn}</div>`;
+}
+function renderQuests() {
+  const Q = questState();
+  $('qSapph').textContent = fmt(state.sapphires);
+  const now = new Date(), mid = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  let i = 0, html = `<div class="q-section"><span>📅 Задания дня</span><span class="q-timer">новые через ${fmtTime((mid - now) / 1000)}</span></div>`;
+  html += Q.daily.map(d => questRow('daily', d.q.id, d.q.icon, d.q.text.replace('{n}', fmt(d.q.n)), '', d.p, d.q.n, d.q.reward, d.done, d.claimed, i++)).join('');
+  html += questRow('bonus', 'bonus', '🎁', 'Выполните все задания дня', 'Бонус за полный день', Q.dailyClaimed, Q.daily.length || DAILY_COUNT, DAILY_BONUS, Q.bonusReady || Q.bonusClaimed, Q.bonusClaimed, i++);
+  const ach = Q.ach.slice().sort((x, y) => {
+    const rank = (z) => z.claimed ? 2 : z.done ? 0 : 1;
+    return rank(x) - rank(y) || (y.v / y.a.goal) - (x.v / x.a.goal);
+  });
+  html += `<div class="q-section"><span>🏅 Достижения</span><span class="q-timer">${Q.ach.filter(x => x.claimed).length} / ${ACHIEVEMENTS.length}</span></div>`;
+  html += ach.map(x => questRow('ach', x.a.id, x.a.icon, x.a.name, x.a.desc, x.v, x.a.goal, x.a.reward, x.done, x.claimed, i++)).join('');
+  $('questsBody').innerHTML = html;
+}
+function openShop() {
+  if (!playing) return;
+  $('shopSapph').textContent = fmt(state.sapphires);
+  $('shopOverlay').classList.add('open');
+  Sound.ui();
 }
 
 // ============================================================
@@ -1659,6 +2041,7 @@ function travelTo(pid, firstTime) {
   tv.classList.add('open');
   Sound.travel();
   closeMap();
+  if (!firstTime) stat('travels');
   setTimeout(() => {
     state.planet = pid;
     endAsteroid(true);
@@ -1759,20 +2142,25 @@ function costSig(s) { return Object.entries(s).map(([k, v]) => getRes(k) >= v ? 
 function panelSig() {
   const t = ui.tab, pid = cur();
   const base = pid + ps(pid).era + t;
-  if (t === 'top') return base + lbVer + (myProfile ? myProfile.rank : '') + state.rebirths;
-  if (t === 'rebirth') return base + (ps('earth').era >= REBIRTH_MIN_ERA) + getRebirthGemsReward()
+  if (t === 'top') return base + lbVer + ui.lbBoard + ui.lbPeriod + (myProfile ? myProfile.rank : '') + state.rebirths;
+  if (t === 'rebirth') return base + rebirthReqList().map(r => r.ok ? 1 : 0).join('') + state.rebirths + getRebirthGemsReward()
     + GLOBAL_PERKS.map(p => (perk(p.id) < p.max && state.gems >= perkCost(p, perk(p.id))) ? 1 : 0).join('')
     + PL(pid).perks.map(p => (ppk(pid, p.id) < p.max && state.gems >= perkCost(p, ppk(pid, p.id))) ? 1 : 0).join('');
-  if (t === 'shop') return base + ui.shopTab + COSMETICS.map(c => state.ownedCosmetics.includes(c.id) ? 'o' : costSig(c.cost)).join('') + state.unlocked.join();
-  return base + PL(pid).buildings.filter(b => b.tab === t).map(b => b.u <= ps(pid).era ? costSig(buildingCost(pid, b)) : 'x').join('|');
+  if (t === 'shop') return base + ui.shopTab + COSMETICS.map(c => state.ownedCosmetics.includes(c.id) ? 'o' : c.code ? 'c' : costSig(c.cost)).join('') + state.unlocked.join();
+  return base + ui.buyMode + PL(pid).buildings.filter(b => b.tab === t).map(b => b.u <= ps(pid).era
+    ? (ui.buyMode === 'max' ? maxAffordable(pid, b) : costSig(bulkCost(pid, b, ui.buyMode))) : 'x').join('|');
 }
-function refreshUI() { renderHeaderAndEra(); if (panelSig() !== lastPanelSig) renderPanel(); }
+function refreshUI() { renderHeaderAndEra(); if (panelSig() !== lastPanelSig) renderPanel(); updateQuestBadge(); }
 
 function buildResourceBar() {
-  const keys = [...PL(cur()).res, 'gems'];
-  $('resourcesBar').innerHTML = keys.map(k =>
-    `<div class="res-card res-${k} ${k === 'gems' ? 'res-gems' : ''}"><span class="res-icon" style="background:${RES[k].tint}">${RES[k].icon}</span><div class="res-data"><span class="res-val" id="rv-${k}">0</span><span class="res-rate" id="rr-${k}"></span></div></div>`
-  ).join('');
+  $('resourcesBar').innerHTML = PL(cur()).res.map(k =>
+    `<div class="res-card res-${k}"><span class="res-icon" style="background:${RES[k].tint}">${RES[k].icon}</span><div class="res-data"><span class="res-val" id="rv-${k}">0</span><span class="res-rate" id="rr-${k}"></span></div></div>`
+  ).join('')
+  // кошелёк: кристаллы и сапфиры в одной карточке
+  + `<div class="res-card res-wallet res-gems" title="Кристаллы и сапфиры">
+       <div class="wallet-line" title="Кристаллы"><span class="w-ico">💎</span><span class="res-val" id="rv-gems">0</span></div>
+       <div class="wallet-line sapph" title="Сапфиры"><span class="w-ico">🔷</span><span class="res-val" id="rv-sapphire">0</span></div>
+     </div>`;
 }
 function syncTabButtons() {
   const P = PL(cur());
@@ -1810,12 +2198,13 @@ function renderHeaderAndEra() {
   const pid = cur(), P = PL(pid), st = ps(pid);
   const r = rates(pid);
   const auto = perk('autoclicker') * 2 * clickGain(pid);
-  [...P.res, 'gems'].forEach(k => {
+  P.res.forEach(k => {
     const v = $('rv-' + k); if (!v) return;
-    v.textContent = fmt(k === 'gems' ? state.gems : st.res[k]);
+    v.textContent = fmt(st.res[k]);
     const rate = k === P.clickRes ? r[k] + auto : (r[k] || 0);
-    $('rr-' + k).textContent = k === 'gems' ? 'кристаллы' : (rate > 0 ? `+${fmt(rate)}/с` : RES[k].name);
+    $('rr-' + k).textContent = rate > 0 ? `+${fmt(rate)}/с` : RES[k].name;
   });
+  if ($('rv-gems')) { $('rv-gems').textContent = fmt(state.gems); $('rv-sapphire').textContent = fmt(state.sapphires); }
   $('hudSub').innerText = `${P.icon} ${stageLabel(pid)} · доход ×${rebirthMult()}`;
   const sp = speedMult();
   $('speedBadge').hidden = sp <= 1;
@@ -1847,7 +2236,8 @@ function renderHeaderAndEra() {
 }
 
 function buildingCard(pid, b, mult, i) {
-  const cost = buildingCost(pid, b), count = ps(pid).counts[b.id] || 0, afford = canPay(cost);
+  const n = buyCount(pid, b);
+  const cost = bulkCost(pid, b, n), count = ps(pid).counts[b.id] || 0, afford = canPay(cost);
   const prod = Object.entries(b.prod).map(([k, v]) => `<span class="pchip">+${fmtRate(v * mult)}${RES[k].icon}/с</span>`).join('');
   return `
     <div class="card ${afford ? 'affordable' : ''}" data-card="${b.id}" style="--i:${i}">
@@ -1858,7 +2248,7 @@ function buildingCard(pid, b, mult, i) {
         <div class="card-prod">${prod}</div>
       </div>
       <button class="btn-buy" data-action="build" data-id="${b.id}" type="button" ${afford ? '' : 'disabled'}>
-        <span>Построить</span><span class="buy-cost">${costChips(cost)}</span>
+        <span>Построить${n > 1 ? ` <b class="buy-n">×${n}</b>` : ''}</span><span class="buy-cost">${costChips(cost)}</span>
       </button>
     </div>`;
 }
@@ -1895,14 +2285,18 @@ function renderPanel() {
   if (tab === 'top') {
     container.innerHTML = renderLeaderboardHtml();
   } else if (tab === 'rebirth') {
-    const canReb = st && ps('earth').era >= REBIRTH_MIN_ERA, reward = getRebirthGemsReward();
+    const reqs = rebirthReqList(), canReb = reqs.every(r => r.ok), reward = getRebirthGemsReward();
     let i = 0;
     container.innerHTML = `
       <div class="card rebirth-card" style="--i:${i++}">
-        <div class="card-title" style="font-size:0.95rem;color:#f5d0fe;">🌀 Квантовое перерождение</div>
-        <div class="card-desc" style="color:#e2e8f0;margin:0;">Сбрасывает ресурсы, постройки и эпохи всех планет (открытые планеты остаются) за 💎 Кристаллы. Каждое перерождение даёт +100% к доходу и силе тапа и поднимает в рейтинге. Сейчас: ×${rebirthMult()} → ×${rebirthMult() + 1}.</div>
+        <div class="card-title" style="font-size:0.95rem;color:#f5d0fe;">🌀 Перерождение №${state.rebirths + 1}</div>
+        <div class="card-desc" style="color:#e2e8f0;margin:0;">Сбрасывает ресурсы, постройки и эпохи всех планет (открытые планеты остаются) за 💎 Кристаллы. Каждое перерождение даёт +100% к доходу и силе тапа. Сейчас: ×${rebirthMult()} → ×${rebirthMult() + 1}.</div>
+        <div class="reb-reqs">
+          <div class="reb-reqs-title">Условия${state.rebirths ? ' — с каждым перерождением их больше' : ''}:</div>
+          ${reqs.map(r => `<div class="reb-req ${r.ok ? 'ok' : ''}"><span>${r.ok ? '✅' : '⬜'} ${esc(r.label)}</span><span class="reb-have">${r.have ? `${r.have}/${r.need + 1}` : '🔒'}</span></div>`).join('')}
+        </div>
         <button class="btn-rebirth-main" data-action="rebirth" type="button" ${canReb ? '' : 'disabled'}>
-          ${canReb ? `Переродиться (+${reward} 💎)` : `Доступно с ${REBIRTH_MIN_ERA + 1}-й эпохи Земли`}
+          ${canReb ? `Переродиться (+${reward} 💎)` : 'Выполните условия'}
         </button>
       </div>
       <div class="section-header" style="--i:${i++}"><span>🌳 Древо Вечности · все планеты</span><span>💎 ${fmt(state.gems)}</span></div>
@@ -1925,9 +2319,10 @@ function renderPanel() {
         const preview = item.type === 'bg'
           ? `<div class="icon-tile swatch" style="background:${item.swatch}"><span>${item.icon}</span></div>`
           : `<div class="icon-tile t-shop">${item.icon}</div>`;
-        const badge = item.planet ? `<span class="planet-badge">${PL(item.planet).icon} ${PL(item.planet).name}</span>` : '';
+        const badge = item.code ? `<span class="planet-badge code">🎁 эксклюзив</span>` : item.planet ? `<span class="planet-badge">${PL(item.planet).icon} ${PL(item.planet).name}</span>` : '';
         let btn;
         if (owned) btn = `<button class="btn-buy ${equipped ? 'equipped' : ''}" data-action="cosmetic" data-id="${item.id}" type="button"><span>${equipped ? '✓ Надето' : 'Надеть'}</span>${equipped ? '<span class="buy-sub">снять</span>' : ''}</button>`;
+        else if (item.code) btn = `<button class="btn-buy code-btn" data-action="codes" type="button"><span>🎁 Промокод</span><span class="buy-sub">только по коду</span></button>`;
         else if (lockedPlanet) btn = `<button class="btn-buy" type="button" disabled><span>🔒 ${PL(item.planet).name}</span><span class="buy-sub">откройте планету</span></button>`;
         else btn = `<button class="btn-buy" data-action="cosmetic" data-id="${item.id}" type="button" ${canPay(item.cost) ? '' : 'disabled'}><span>Купить</span><span class="buy-cost">${costChips(item.cost)}</span></button>`;
         return `
@@ -1945,7 +2340,8 @@ function renderPanel() {
     const list = P.buildings.filter(b => b.tab === tab);
     const open = list.filter(b => b.u <= st.era);
     const next = list.find(b => b.u > st.era);
-    container.innerHTML = open.map((b, i) => buildingCard(pid, b, mult, i)).join('')
+    const modes = `<div class="buy-modes" style="--i:0"><span class="bm-lbl">Купить</span>${BUY_MODES.map(m => `<button class="bm-btn ${ui.buyMode === m ? 'active' : ''}" data-action="buymode" data-id="${m}" type="button">${m === 'max' ? 'MAX' : '×' + m}</button>`).join('')}</div>`;
+    container.innerHTML = (open.length ? modes : '') + open.map((b, i) => buildingCard(pid, b, mult, i + 1)).join('')
       + (next ? `<div class="card teaser" style="--i:${open.length}"><div class="icon-tile locked-tile">${next.icon}</div><div class="card-info"><div class="card-title"><span>🔒 ${next.name}</span></div><div class="card-desc" style="margin:0;">Откроется: ${stageLabel(pid, next.u)} «${P.eras[next.u].name}»</div></div></div>` : '')
       + (!open.length && !next ? '<div class="empty"><div class="empty-ico">🌌</div><div class="empty-text">Здесь пока пусто</div></div>' : '');
   }
@@ -1982,6 +2378,10 @@ function setupEvents() {
     else if (a === 'rebirth') performRebirth();
     else if (a === 'shoptab') { if (ui.shopTab !== id) { ui.shopTab = id; Sound.ui(); renderPanel(); animatePanel(); } }
     else if (a === 'lbrefresh') fetchLeaderboard();
+    else if (a === 'lbboard') setLeaderboard(id, ui.lbPeriod);
+    else if (a === 'lbperiod') setLeaderboard(ui.lbBoard, id);
+    else if (a === 'buymode') setBuyMode(id);
+    else if (a === 'codes') openCodes();
   });
   $('evolveBtn').addEventListener('click', evolveEra);
   $('rankPill').addEventListener('click', () => { if (playing) selectTab('top'); });
@@ -2012,6 +2412,24 @@ function setupEvents() {
   $('nickLogout').addEventListener('click', () => { $('nickOverlay').classList.remove('open'); logout({ ask: false, skipSync: true }); });
   $('profileOverlay').addEventListener('click', (e) => { if (e.target === $('profileOverlay')) $('profileOverlay').classList.remove('open'); });
   $('updateGo').addEventListener('click', downloadUpdate);
+  // квесты, магазин, промокоды
+  $('questBtn').addEventListener('click', openQuests);
+  $('shopBtn').addEventListener('click', openShop);
+  $('questsClose').addEventListener('click', () => { $('questsOverlay').classList.remove('open'); Sound.ui(); });
+  $('questsOverlay').addEventListener('click', (e) => {
+    const b = e.target.closest('.q-claim');
+    if (b) { claimQuest(b.dataset.qkind, b.dataset.qid, b); return; }
+    if (e.target === $('questsOverlay')) $('questsOverlay').classList.remove('open');
+  });
+  $('shopClose').addEventListener('click', () => { $('shopOverlay').classList.remove('open'); Sound.ui(); });
+  $('shopQuests').addEventListener('click', () => { $('shopOverlay').classList.remove('open'); openQuests(); });
+  $('shopCode').addEventListener('click', openCodes);
+  $('shopOverlay').addEventListener('click', (e) => { if (e.target === $('shopOverlay')) $('shopOverlay').classList.remove('open'); });
+  $('codeCancel').addEventListener('click', () => { $('codeOverlay').classList.remove('open'); Sound.ui(); });
+  $('codeSubmit').addEventListener('click', submitCode);
+  $('codeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitCode(); });
+  $('codeInput').addEventListener('input', () => setCodeMsg(''));
+  $('codeOverlay').addEventListener('click', (e) => { if (e.target === $('codeOverlay')) $('codeOverlay').classList.remove('open'); });
   $('updateLater').addEventListener('click', () => { $('updateOverlay').classList.remove('open'); Sound.ui(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden && playing) { saveLocal(); syncNow(true); } });
   window.addEventListener('pagehide', () => { if (playing) { saveLocal(); syncNow(true); } });
@@ -2024,7 +2442,11 @@ window.__terraBack = function () {
   if ($('confirmOverlay').classList.contains('open')) { $('confirmCancel').click(); return true; }
   if ($('mapOverlay').classList.contains('open')) { closeMap(); return true; }
   if ($('profileOverlay').classList.contains('open')) { $('profileOverlay').classList.remove('open'); return true; }
+  if (forcedUpdate) return true;   // окно «Нужно обновление» не закрывается
   if ($('updateOverlay').classList.contains('open')) { $('updateOverlay').classList.remove('open'); return true; }
+  if ($('questsOverlay').classList.contains('open')) { $('questsOverlay').classList.remove('open'); return true; }
+  if ($('shopOverlay').classList.contains('open')) { $('shopOverlay').classList.remove('open'); return true; }
+  if ($('codeOverlay').classList.contains('open')) { $('codeOverlay').classList.remove('open'); return true; }
   return false;
 };
 
@@ -2044,6 +2466,7 @@ setInterval(() => {
     const r = rates(pid), res = ps(pid).res;
     for (const k in r) res[k] += r[k] * dt;
   });
+  if (!document.hidden) state.stats.playSec += dt;
 
   if (!activeAsteroid && !cinemaOpen && !traveling) {
     bossCooldown -= dt;
