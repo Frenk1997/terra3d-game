@@ -4,8 +4,10 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
 import android.graphics.Bitmap;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -72,7 +74,8 @@ public class MainActivity extends Activity {
         s.setDisplayZoomControls(false);
         s.setTextZoom(100);
         s.setMediaPlaybackRequiresUserGesture(true);
-        s.setUserAgentString(s.getUserAgentString() + " Terra3DApp/1");
+        // TerraBuild/<номер сборки> — по нему сервер и игра понимают, что пора предложить обновление
+        s.setUserAgentString(s.getUserAgentString() + " Terra3DApp/1 TerraBuild/" + buildNumber());
 
         webView.addJavascriptInterface(new Bridge(), "TerraNative");
         webView.setWebChromeClient(new WebChromeClient());
@@ -126,6 +129,17 @@ public class MainActivity extends Activity {
             }
         }
         return b.append('"').toString();
+    }
+
+    /** Номер сборки (versionCode) — совпадает с номером релиза v1.0.N на GitHub. */
+    @SuppressWarnings("deprecation")
+    private long buildNumber() {
+        try {
+            PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return Build.VERSION.SDK_INT >= 28 ? pi.getLongVersionCode() : pi.versionCode;
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     /** Открывает страницу во внешнем браузере (в Chrome — как Custom Tab поверх игры). */

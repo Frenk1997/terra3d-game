@@ -52,12 +52,29 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/terra3d.apk"
           ls -la "$GITHUB_WORKSPACE/terra3d.apk"
 
+      - name: Описание версии для окна «Вышло обновление»
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          # Что нового — первая строка сообщения коммита (служебные «Update …», «Merge …» не показываем)
+          export NOTES="$(git log -1 --pretty=%s)"
+          python3 - <<'PY'
+          import json, os, re
+          n = int(os.environ["BUILD_NUMBER"])
+          notes = os.environ.get("NOTES", "").strip()
+          if re.match(r"^(Update|Merge|Add files|Create|Delete|Revert)\b", notes):
+              notes = ""
+          with open("version.json", "w", encoding="utf-8") as f:
+              json.dump({"build": n, "version": "1.0.%d" % n, "notes": notes[:300]}, f, ensure_ascii=False)
+          PY
+          cat version.json
+
       - name: Опубликовать в Releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v1.0.${{ github.run_number }}"
-          gh release create "$TAG" terra3d.apk \
+          gh release create "$TAG" terra3d.apk version.json \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --title "Terra 3D $TAG" \

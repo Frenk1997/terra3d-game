@@ -8,6 +8,7 @@
 //   GOOGLE_CLIENT_SECRET  — секрет этого клиента (wrangler secret)
 //   SESSION_SECRET        — любая длинная случайная строка для подписи сессий (wrangler secret)
 //   APP_PACKAGE           — (необязательно) имя пакета Android-приложения, по умолчанию com.terra3d.game
+//   GITHUB_REPO           — (необязательно) «владелец/репозиторий»: откуда брать номер последней версии APK
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -288,10 +289,80 @@ async function handleExchange(request, env) {
   return json({ token, uid: row.sub, profile: p ? await profileView(env, p) : null, save: parseSave(p) });
 }
 
+
+// ---------- версии приложения ----------
+// APK пишет в User-Agent «Terra3DApp/1 TerraBuild/<номер сборки>». Сборки до 1.0.5 номер не передают:
+// своего окна «Вышло обновление» у них нет, поэтому сервер подсказывает им сам — в рейтинге и в плашке места.
+// Номер последней версии — из version.json, который GitHub-сценарий кладёт в каждый релиз рядом с APK.
+const RELEASE_CACHE_MS = 10 * 60 * 1000;
+const RELEASE_RETRY_MS = 2 * 60 * 1000;
+let releaseCache = { at: 0, data: null };
+
+function clientInfo(request) {
+  const ua = request.headers.get('User-Agent') || '';
+  const m = ua.match(/\bTerraBuild\/(\d{1,7})\b/);
+  return { app: /\bTerra3DApp\//.test(ua), build: m ? parseInt(m[1], 10) : 0 };
+}
+const repoOf = (env) => (env.GITHUB_REPO && /^[\w.-]+\/[\w.-]+$/.test(env.GITHUB_REPO) ? env.GITHUB_REPO : '');
+
+async function latestRelease(env) {
+  const repo = repoOf(env);
+  if (!repo) return null;
+  const now = Date.now();
+  if (releaseCache.at && now - releaseCache.at < (releaseCache.data ? RELEASE_CACHE_MS : RELEASE_RETRY_MS)) return releaseCache.data;
+  let data = null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const r = await fetch(`https://github.com/${repo}/releases/latest/download/version.json`, {
+      headers: { 'User-Agent': 'terra-api', Accept: 'application/json, application/octet-stream' },
+      signal: ctrl.signal, cf: { cacheTtl: 300, cacheEverything: true }
+    });
+    if (r.ok) {
+      const j = await r.json();
+      const build = Number(j && j.build);
+      if (Number.isInteger(build) && build > 0 && build < 1e7) {
+        data = {
+          build,
+          version: String(j.version || '1.0.' + build).slice(0, 20),
+          notes: String(j.notes || '').slice(0, 300),
+          url: `https://github.com/${repo}/releases/latest/download/terra3d.apk`
+        };
+      }
+    }
+  } catch (e) {} finally { clearTimeout(timer); }
+  releaseCache = { at: now, data: data || releaseCache.data };
+  return releaseCache.data;
+}
+
+// Старый APK (без номера сборки), для которого уже есть новая версия
+async function legacyUpdate(request, env) {
+  const c = clientInfo(request);
+  if (!c.app || c.build) return null;
+  return await latestRelease(env);
+}
+// Плашка «🏆 #3» в старых версиях: дописываем подсказку
+const legacyRank = (rank) => `${rank} · ⬆ Обновить`;
+// Баннер для старых версий: они вставляют поле total из /api/leaderboard в рейтинг как HTML
+function legacyBanner(latest) {
+  const notes = latest.notes ? escHtml(latest.notes) : 'Новые эпохи, планеты и улучшения';
+  // место «#3 · ⬆ Обновить» в строке «вы» — помельче, чтобы не теснило ник
+  return '<style>.lb-me-rank{font-size:0.74rem!important;line-height:1.25;min-width:58px!important;max-width:64px}</style>'
+    + '<a href="' + escHtml(latest.url) + '" style="display:block;margin:10px 0 2px;padding:12px 14px;border-radius:14px;'
+    + 'background:linear-gradient(135deg,#2563eb,#7c3aed);color:#fff;text-decoration:none;font-size:0.82rem;'
+    + 'line-height:1.35;font-weight:600;letter-spacing:0;text-transform:none;white-space:normal;box-shadow:0 6px 20px rgba(76,29,149,0.45)">'
+    + '<b style="display:block;font-size:0.95rem;font-weight:900;margin-bottom:3px">⬆️ Вышла новая версия ' + escHtml(latest.version) + '</b>'
+    + notes + '<span style="display:block;margin-top:8px;padding:8px 10px;border-radius:10px;background:rgba(255,255,255,0.18);'
+    + 'text-align:center;font-weight:900">Нажмите, чтобы скачать</span>'
+    + '<span style="display:block;margin-top:6px;font-size:0.7rem;opacity:0.85">Установите поверх текущей — прогресс сохранится</span></a><span hidden>';
+}
+
 // ---------- игровое API ----------
-async function handleMe(sub, env) {
+async function handleMe(request, sub, env) {
   const p = await getPlayer(env, sub);
-  return json({ uid: sub, profile: p ? await profileView(env, p) : null, save: parseSave(p) });
+  const profile = p ? await profileView(env, p) : null;
+  if (profile && await legacyUpdate(request, env)) profile.rank = legacyRank(profile.rank);
+  return json({ uid: sub, profile, save: parseSave(p) });
 }
 
 async function handleProfile(request, sub, env) {
@@ -360,7 +431,9 @@ async function handleSync(request, sub, env) {
     .bind(raw, newScore, Math.floor(newScore / 10), newScore % 10, now, scoreUpdatedAt, sub).run();
 
   const fresh = await getPlayer(env, sub);
-  return json({ ok: true, score: fresh.score, rebirths: fresh.rebirths, era: fresh.era, rank: await rankOf(env, fresh) });
+  let rank = await rankOf(env, fresh);
+  if (await legacyUpdate(request, env)) rank = legacyRank(rank);
+  return json({ ok: true, score: fresh.score, rebirths: fresh.rebirths, era: fresh.era, rank });
 }
 
 async function handleReset(sub, env) {
@@ -379,13 +452,22 @@ async function handleDelete(sub, env) {
   return json({ ok: true });
 }
 
-async function handleLeaderboard(url, env) {
+async function handleLeaderboard(request, url, env) {
   const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
   const [rows, total] = await env.DB.batch([
     env.DB.prepare('SELECT nickname, score, rebirths, era FROM players ORDER BY score DESC, score_updated_at ASC LIMIT ?1').bind(limit),
     env.DB.prepare('SELECT COUNT(*) AS c FROM players')
   ]);
-  return json({ players: rows.results || [], total: (total.results && total.results[0] && total.results[0].c) || 0 });
+  const count = (total.results && total.results[0] && total.results[0].c) || 0;
+  const latest = await legacyUpdate(request, env);
+  return json({ players: rows.results || [], total: latest ? count + legacyBanner(latest) : count });
+}
+
+// Новые версии сами спрашивают, не вышло ли обновление
+async function handleClient(request, env) {
+  const c = clientInfo(request);
+  const latest = await latestRelease(env);
+  return json({ latest, update: !!(latest && c.app && c.build > 0 && c.build < latest.build) });
 }
 
 export default {
@@ -396,7 +478,8 @@ export default {
     const m = request.method;
     try {
       if (path === '/api/health' && m === 'GET') return json({ terra: true, configured: isConfigured(env) });
-      if (path === '/api/leaderboard' && m === 'GET') return await handleLeaderboard(url, env);
+      if (path === '/api/leaderboard' && m === 'GET') return await handleLeaderboard(request, url, env);
+      if (path === '/api/client' && m === 'GET') return await handleClient(request, env);
       if (path === '/api/auth/exchange' && m === 'POST') return await handleExchange(request, env);
       if (path === '/auth/google/start' && m === 'GET') return await handleAuthStart(url, env);
       if (path === '/auth/google/callback' && m === 'GET') return await handleAuthCallback(url, env);
@@ -405,7 +488,7 @@ export default {
       if (protectedRoutes.includes(path)) {
         const sub = await authedSub(request, env);
         if (!sub) return fail(401, 'unauthorized');
-        if (path === '/api/me' && m === 'GET') return await handleMe(sub, env);
+        if (path === '/api/me' && m === 'GET') return await handleMe(request, sub, env);
         if (path === '/api/profile' && m === 'POST') return await handleProfile(request, sub, env);
         if (path === '/api/sync' && m === 'POST') return await handleSync(request, sub, env);
         if (path === '/api/reset' && m === 'POST') return await handleReset(sub, env);

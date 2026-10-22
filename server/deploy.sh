@@ -8,6 +8,7 @@
 #   GOOGLE_CLIENT_SECRET   секрет этого клиента
 #   SESSION_SECRET         любая длинная случайная строка
 #   APK_URL                (необязательно) ссылка «Скачать для Android» на сайте
+#   GITHUB_REPO            (необязательно) «владелец/репозиторий» с релизами APK; в GitHub Actions берётся сам
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -58,7 +59,11 @@ if [ -n "${APK_URL:-}" ]; then
 fi
 
 echo "== 4/4 Выкладка"
-"${WRANGLER[@]}" deploy --var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}"
+# GITHUB_REPO — откуда сервер узнаёт номер последней версии APK (для окна «Вышло обновление»)
+REPO="${GITHUB_REPO:-${GITHUB_REPOSITORY:-}}"
+VARS=(--var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}")
+if [ -n "$REPO" ]; then VARS+=(--var "GITHUB_REPO:${REPO}"); fi
+"${WRANGLER[@]}" deploy "${VARS[@]}"
 printf '%s' "$GOOGLE_CLIENT_SECRET" | "${WRANGLER[@]}" secret put GOOGLE_CLIENT_SECRET
 printf '%s' "$SESSION_SECRET" | "${WRANGLER[@]}" secret put SESSION_SECRET
 

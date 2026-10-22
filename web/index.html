@@ -266,6 +266,18 @@
   .btn-soft { flex: 1; border-radius: 14px; padding: 13px; background: rgba(255, 255, 255, 0.06); border: 1px solid var(--stroke); color: #dbe4ff; font-weight: 800; font-size: 0.84rem; cursor: pointer; }
   .btn-soft.danger { color: #fda4af; border-color: rgba(251, 113, 133, 0.5); background: rgba(244, 63, 94, 0.1); }
 
+  .update-sheet { position: relative; overflow: hidden; text-align: center; align-items: center; border-color: rgba(129, 140, 248, 0.55); }
+  .update-sheet > * { position: relative; }
+  .update-sheet .update-glow { position: absolute; left: 50%; top: -90px; width: 260px; height: 220px; margin-left: -130px; border-radius: 50%; background: radial-gradient(circle, rgba(124, 58, 237, 0.55), transparent 70%); pointer-events: none; }
+  .update-ico { font-size: 3.2rem; line-height: 1; margin-top: 4px; filter: drop-shadow(0 8px 18px rgba(124, 58, 237, 0.7)); animation: updFloat 2.4s ease-in-out infinite; }
+  @keyframes updFloat { 50% { transform: translateY(-7px) rotate(-8deg); } }
+  .update-kicker { font-size: 0.68rem; font-weight: 900; letter-spacing: 0.24em; text-transform: uppercase; color: #a5b4fc; }
+  .update-sheet h2 { margin-top: -6px; font-size: 1.35rem; }
+  .update-sheet p { color: #c7d4ff; }
+  .update-ver { font-size: 0.7rem; font-weight: 700; color: var(--text-dim); background: rgba(255, 255, 255, 0.05); border: 1px solid var(--stroke); padding: 4px 12px; border-radius: 99px; }
+  .update-sheet .sheet-stack { width: 100%; }
+  .update-sheet .update-hint { font-size: 0.7rem; color: var(--text-dim); }
+
   #loginOverlay { background: radial-gradient(120% 80% at 50% 0%, #17235a 0%, #060b1d 55%, #02040d 100%); backdrop-filter: none; -webkit-backdrop-filter: none; z-index: 300; overflow: hidden; }
   .login-stars, .login-stars::before, .login-stars::after {
     content: ''; position: absolute; inset: 0;
@@ -519,6 +531,23 @@
       <button class="btn-soft" id="confirmCancel" type="button">Отмена</button>
       <button class="btn-main" id="confirmOk" type="button">Да</button>
     </div>
+  </div>
+</div>
+
+<!-- ===== Вышло обновление (только в APK) ===== -->
+<div class="overlay" id="updateOverlay" style="z-index: 450;">
+  <div class="sheet update-sheet">
+    <div class="update-glow"></div>
+    <div class="update-ico">🚀</div>
+    <div class="update-kicker">Вышло обновление</div>
+    <h2 id="updateTitle">Terra 3D</h2>
+    <p id="updateNotes"></p>
+    <div class="update-ver" id="updateVer"></div>
+    <div class="sheet-stack">
+      <button class="btn-main" id="updateGo" type="button">⬇️ Скачать обновление</button>
+      <button class="btn-soft" id="updateLater" type="button">Позже</button>
+    </div>
+    <p class="update-hint">Установите поверх текущей версии — прогресс хранится в аккаунте и никуда не пропадёт.</p>
   </div>
 </div>
 

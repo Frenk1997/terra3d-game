@@ -6,6 +6,8 @@
 // ============================================================
 const RAW_CONFIG = window.TERRA_CONFIG || {};
 const IS_APP = typeof window.TerraNative === 'object' && window.TerraNative !== null; // запущено внутри APK
+// номер сборки APK (v1.0.N) — приложение дописывает его в User-Agent; на сайте 0
+const MY_BUILD = IS_APP ? (parseInt((navigator.userAgent.match(/\bTerraBuild\/(\d+)/) || [])[1], 10) || 0) : 0;
 const CONFIG = { API_URL: '', APK_URL: String(RAW_CONFIG.APK_URL || '').trim() };
 let CONFIGURED = false;
 
@@ -328,7 +330,7 @@ async function syncNow(keepalive = false) {
   } catch (e) {
     if (e.status === 401) { syncing = false; forceLogout('Сессия истекла. Войдите снова.'); return; }
     if (e.status === 404 && e.message === 'no_profile') { syncing = false; logout({ ask: false, skipSync: true, message: 'Аккаунт не найден. Войдите снова.' }); return; }
-    if (e.status === 409 && e.message === 'client_outdated') { clientOutdated = true; showToast('Вышла новая версия игры — обновите приложение', 6000); }
+    if (e.status === 409 && e.message === 'client_outdated') { clientOutdated = true; showToast('Вышла новая версия игры — обновите приложение', 6000); checkUpdate(true); }
     setSync('off');
   } finally { syncing = false; }
 }
@@ -478,6 +480,7 @@ function startPlaying(offline) {
   else if (offline) setSync('off');
   else { setSync('sync'); queueSync(800); fetchLeaderboard(); }
   if (CONFIGURED && !demo && offline) queueSync(5000);
+  checkUpdate();
 }
 
 function grantOffline(sec) {
@@ -605,8 +608,46 @@ async function submitNick() {
   }
 }
 
+// ---------- Вышло обновление (только в APK) ----------
+// Сервер знает номер последней сборки (version.json из релиза на GitHub) и сравнивает его с нашим.
+let updateInfo = null, updateShownBuild = 0, updateRetry = null;
+async function checkUpdate(force = false) {
+  if (!IS_APP || !MY_BUILD || !CONFIGURED) return;
+  try {
+    const r = await api('/api/client');
+    if (r && r.update && r.latest && r.latest.build > MY_BUILD) {
+      updateInfo = r.latest;
+      maybeShowUpdate(force);
+    }
+  } catch (e) {}
+}
+function screenBusy() {
+  return cinemaOpen || traveling || !!document.querySelector('.overlay.open');
+}
+function maybeShowUpdate(force = false) {
+  if (!updateInfo || (!force && updateShownBuild === updateInfo.build)) return;
+  clearTimeout(updateRetry);
+  // не перебиваем заставку эпохи, перелёт и другие окна — подождём
+  if (!playing || screenBusy()) { updateRetry = setTimeout(() => maybeShowUpdate(force), 3000); return; }
+  updateShownBuild = updateInfo.build;
+  $('updateTitle').innerText = 'Terra 3D ' + updateInfo.version;
+  $('updateNotes').innerText = updateInfo.notes || 'Новые возможности и исправления.';
+  $('updateVer').innerText = 'У вас версия 1.0.' + MY_BUILD;
+  $('updateOverlay').classList.add('open');
+  Sound.unlock();
+}
+function downloadUpdate() {
+  const url = (updateInfo && updateInfo.url) || CONFIG.APK_URL;
+  $('updateOverlay').classList.remove('open');
+  if (!url) return;
+  if (playing) { saveLocal(); syncNow(true); }
+  try { window.TerraNative.openExternal(url); } catch (e) { location.href = url; }
+  showToast('Скачивается обновление — откройте файл и установите поверх игры', 6000);
+}
+setInterval(() => { if (playing && !document.hidden) checkUpdate(); }, 30 * 60 * 1000);
+
 // ---------- Диалоги ----------
-function closeAllOverlays() { ['nickOverlay', 'profileOverlay', 'confirmOverlay', 'loginOverlay', 'mapOverlay'].forEach(id => $(id).classList.remove('open')); }
+function closeAllOverlays() { ['nickOverlay', 'profileOverlay', 'confirmOverlay', 'loginOverlay', 'mapOverlay', 'updateOverlay'].forEach(id => $(id).classList.remove('open')); }
 function askConfirm({ title, text, ok = 'Да', cancel = 'Отмена', danger = false }) {
   return new Promise((resolve) => {
     $('confirmTitle').innerText = title;
@@ -639,16 +680,18 @@ function openProfile() {
       <div class="stat-box"><div class="stat-val">${state.unlocked.length}</div><div class="stat-lbl">Планеты</div></div>
     </div>
     <div class="sheet-stack">
+      ${updateInfo ? `<button class="btn-main" id="pfUpdate" type="button">⬆️ Обновить до ${esc(updateInfo.version)}</button>` : ''}
       <button class="btn-soft" id="pfSound" type="button">${Sound.enabled ? '🔊 Звук включён' : '🔇 Звук выключен'}</button>
       ${online ? '<button class="btn-soft" id="pfLogout" type="button">Выйти из аккаунта</button>' : ''}
       <button class="btn-soft danger" id="pfReset" type="button">Сбросить прогресс</button>
       ${online ? '<button class="btn-soft danger" id="pfDelete" type="button">Удалить аккаунт</button>' : ''}
       <button class="btn-main" id="pfClose" type="button">Закрыть</button>
     </div>
-    <div class="version">Terra 3D · версия ${GAME_VERSION}.0</div>`;
+    <div class="version">Terra 3D · ${MY_BUILD ? 'версия 1.0.' + MY_BUILD : 'веб-версия'}</div>`;
   $('pfClose').onclick = () => $('profileOverlay').classList.remove('open');
   $('pfSound').onclick = () => { toggleSound(); $('pfSound').innerText = Sound.enabled ? '🔊 Звук включён' : '🔇 Звук выключен'; };
   $('pfReset').onclick = resetGame;
+  if (updateInfo) $('pfUpdate').onclick = () => { $('profileOverlay').classList.remove('open'); downloadUpdate(); };
   if (online) { $('pfLogout').onclick = () => { $('profileOverlay').classList.remove('open'); logout(); }; $('pfDelete').onclick = deleteAccount; }
   $('profileOverlay').classList.add('open');
 }
@@ -1968,6 +2011,8 @@ function setupEvents() {
   $('nickDice').addEventListener('click', () => { $('nickInput').value = randomNick(); setNickMsg(''); Sound.ui(); });
   $('nickLogout').addEventListener('click', () => { $('nickOverlay').classList.remove('open'); logout({ ask: false, skipSync: true }); });
   $('profileOverlay').addEventListener('click', (e) => { if (e.target === $('profileOverlay')) $('profileOverlay').classList.remove('open'); });
+  $('updateGo').addEventListener('click', downloadUpdate);
+  $('updateLater').addEventListener('click', () => { $('updateOverlay').classList.remove('open'); Sound.ui(); });
   document.addEventListener('visibilitychange', () => { if (document.hidden && playing) { saveLocal(); syncNow(true); } });
   window.addEventListener('pagehide', () => { if (playing) { saveLocal(); syncNow(true); } });
 }
@@ -1979,6 +2024,7 @@ window.__terraBack = function () {
   if ($('confirmOverlay').classList.contains('open')) { $('confirmCancel').click(); return true; }
   if ($('mapOverlay').classList.contains('open')) { closeMap(); return true; }
   if ($('profileOverlay').classList.contains('open')) { $('profileOverlay').classList.remove('open'); return true; }
+  if ($('updateOverlay').classList.contains('open')) { $('updateOverlay').classList.remove('open'); return true; }
   return false;
 };
 
