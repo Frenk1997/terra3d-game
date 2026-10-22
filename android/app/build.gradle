@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Номер сборки берётся из GitHub Actions (каждая сборка — новая версия, обновляется поверх старой)
+def buildNumber = (System.getenv('BUILD_NUMBER') ?: '1') as Integer
+def keystorePassword = System.getenv('KEYSTORE_PASSWORD')
+
+android {
+    namespace 'com.terra3d.game'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.terra3d.game'
+        minSdk 24
+        targetSdk 34
+        versionCode buildNumber
+        versionName "1.0.${buildNumber}"
+    }
+
+    signingConfigs {
+        release {
+            storeFile file('release.keystore')
+            storeType 'pkcs12'
+            storePassword keystorePassword
+            keyAlias 'terra'
+            keyPassword keystorePassword
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Без пароля (локальная проверка) подписываем отладочным ключом
+            signingConfig keystorePassword ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // Игра — это папка web/ в корне репозитория: она целиком попадает в APK
+    sourceSets {
+        main {
+            assets.srcDirs = ['../../web']
+        }
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}

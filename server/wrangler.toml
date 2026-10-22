@@ -1,0 +1,15 @@
+# Настройки Cloudflare Worker. При деплое через GitHub (сценарий «Deploy server») всё подставляется само:
+# ID базы, веб-версия игры (папка public = копия web/), GOOGLE_CLIENT_ID и секреты.
+
+name = "terra-api"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+
+# Веб-версия игры раздаётся с того же адреса (папку public сценарий создаёт из web/)
+[assets]
+directory = "./public"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "terra"
+database_id = "00000000-0000-0000-0000-000000000000"

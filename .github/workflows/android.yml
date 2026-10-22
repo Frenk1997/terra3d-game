@@ -1,0 +1,67 @@
+# Собирает APK при каждом изменении игры (папка web/) или Android-проекта
+# и выкладывает его в Releases. Ссылка на последнюю версию для игроков:
+#   https://github.com/<ваш-логин>/<репозиторий>/releases/latest/download/terra3d.apk
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'web/**'
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: false
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v5
+
+      - name: Проверить настройки
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error title=Нет пароля ключа::Добавьте секрет KEYSTORE_PASSWORD (Settings → Secrets and variables → Actions). Пароль — в сообщении Claude, см. README, шаг 2."
+            exit 1
+          fi
+          if grep -q "YOUR-SUBDOMAIN" web/config.js; then
+            echo "::warning title=Демо-сборка::В web/config.js не указан адрес сервера — APK будет работать только в демо-режиме (без входа и рейтинга)."
+          fi
+
+      - name: Собрать APK
+        working-directory: android
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          if [ -n "${JAVA_HOME_17_X64:-}" ]; then export JAVA_HOME="$JAVA_HOME_17_X64"; fi
+          java -version
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/terra3d.apk"
+          ls -la "$GITHUB_WORKSPACE/terra3d.apk"
+
+      - name: Опубликовать в Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.0.${{ github.run_number }}"
+          gh release create "$TAG" terra3d.apk \
+            --repo "${{ github.repository }}" \
+            --target "${{ github.sha }}" \
+            --title "Terra 3D $TAG" \
+            --notes "Скачать: terra3d.apk ниже. Постоянная ссылка на последнюю версию: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/terra3d.apk" \
+            --latest
+          echo "### APK готов 🎉" >> "$GITHUB_STEP_SUMMARY"
+          echo "Ссылка для игроков: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/terra3d.apk" >> "$GITHUB_STEP_SUMMARY"

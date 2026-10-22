@@ -1,0 +1,10 @@
+# сборка
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+server/public/
+server/node_modules/
+server/.wrangler/
+*.apk
+.DS_Store
