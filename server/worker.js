@@ -1118,7 +1118,9 @@ async function twitchViewer(request, env) {
 function handleTwitchStatus(env) {
   const secrets = String(env.TWITCH_EXT_SECRET || '').split(/[\s,]+/).filter(Boolean);
   const b64 = secrets.map(s => { try { return /^[A-Za-z0-9+/]+={0,2}$/.test(s) && atob(s).length >= 16; } catch (e) { return false; } });
-  return json({ configured: secrets.length > 0, secrets: secrets.length, secretsBase64: b64, last: twitchLast });
+  // длина строки и число байт после base64 (секрет расширения Twitch — обычно 44 символа / 32 байта); сами секреты не показываются
+  const shape = secrets.map(s => { let n = 0; try { n = atob(s).length; } catch (e) {} return `${s.length}/${n}`; });
+  return json({ configured: secrets.length > 0, secrets: secrets.length, secretsBase64: b64, shape, last: twitchLast });
 }
 async function sessionReply(env, sub, extra = {}) {
   const token = await signSession(sub, env);
