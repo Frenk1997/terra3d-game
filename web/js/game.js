@@ -52,7 +52,8 @@ function defaultPlanet(pid) {
   return { res, counts, era: 0 };
 }
 // Статистика за всё время (не сбрасывается перерождением) — для квестов
-const STAT_KEYS = ['taps', 'built', 'asteroids', 'golden', 'evolves', 'perks', 'travels', 'playSec', 'chests'];
+// friends и alliance — сколько было друзей и был ли альянс (для достижений; знает сервер)
+const STAT_KEYS = ['taps', 'built', 'asteroids', 'golden', 'evolves', 'perks', 'travels', 'playSec', 'chests', 'friends', 'alliance'];
 function defaultStats() {
   const st = { maxEra: {} };
   STAT_KEYS.forEach(k => st[k] = 0);
@@ -73,8 +74,14 @@ function defaultState() {
   };
 }
 let state = defaultState();
-const ui = { tab: 'a', shopTab: 'hat', mapSel: null, lbBoard: 'all', lbPeriod: 'all', buyMode: 1 };
+// tab — открытая панель снизу (null — панель закрыта, на экране только планета)
+const ui = { tab: null, shopTab: 'hat', mapSel: null, lbBoard: 'all', lbPeriod: 'all', buyMode: 1, socialTab: 'friends', allyPeriod: 'all' };
 try { const bm = localStorage.getItem('terra_buy_mode'); if (bm) ui.buyMode = bm === 'max' ? 'max' : (BUY_MODES.includes(+bm) ? +bm : 1); } catch (e) {}
+
+// Настройки на этом устройстве: вибрация, эффекты, запись чисел (звук и музыка — в Sound)
+const prefs = { vibrate: true, lowfx: false, sci: false };
+try { Object.assign(prefs, JSON.parse(localStorage.getItem('terra_prefs')) || {}); } catch (e) {}
+function savePrefs() { try { localStorage.setItem('terra_prefs', JSON.stringify(prefs)); } catch (e) {} }
 
 const num = (x) => (typeof x === 'number' && isFinite(x) && x >= 0) ? x : 0;
 const int = (x) => Math.max(0, Math.floor(num(x)));
@@ -267,6 +274,9 @@ function canPrestige(pid = cur()) { return prestigeInfo(pid).ready; }
 //  ФОРМАТИРОВАНИЕ И МЕЛОЧИ
 // ============================================================
 function fmt(n) {
+  if (prefs.sci && n >= 1e6) return n.toExponential(2).replace('e+', 'e');
+  if (n >= 1e21) return n.toExponential(2).replace('e+', 'e');
+  if (n >= 1e18) return (n / 1e18).toFixed(2) + 'Qi';
   if (n >= 1e15) return (n / 1e15).toFixed(2) + 'Q';
   if (n >= 1e12) return (n / 1e12).toFixed(2) + 'T';
   if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -300,7 +310,7 @@ function showToast(text, ms = 3500) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
-function vibrate(p) { try { if (navigator.vibrate) navigator.vibrate(p); } catch (e) {} }
+function vibrate(p) { if (!prefs.vibrate) return; try { if (navigator.vibrate) navigator.vibrate(p); } catch (e) {} }
 
 function avatarStyle(name) {
   let h = 0;
@@ -309,7 +319,13 @@ function avatarStyle(name) {
 }
 function initialOf(name) { const c = [...String(name || '?')][0] || '?'; return c.toUpperCase(); }
 // Фон интерфейса — всегда «родной» для планеты; купленный фон меняет только космос за планетой
-function applyBodyBg() { $('bodyBg').className = PL(cur()).defaultBg; $('viewport').dataset.bg = state.look[cur()].bg || ''; }
+function applyBodyBg() {
+  // у body есть и другие классы (panel-open) — меняем только фон
+  const b = document.body, bg = PL(cur()).defaultBg;
+  for (const c of [...b.classList]) if (c.startsWith('bg-') && c !== bg) b.classList.remove(c);
+  b.classList.add(bg);
+  $('viewport').dataset.bg = state.look[cur()].bg || '';
+}
 
 // ============================================================
 //  СЕТЬ / АККАУНТ
@@ -568,7 +584,7 @@ function startPlaying(offline) {
   endAsteroid(true);
   playing = true;
   lastTick = Date.now();
-  ui.tab = 'a';
+  ui.tab = null; document.body.classList.remove('panel-open');
   onPlanetChanged();
   renderRankPill();
   updateUserChip();
@@ -651,7 +667,8 @@ async function logout({ ask = true, skipSync = false, keepCache = false, message
   state = defaultState();
   endAsteroid(true);
   particles = []; ripples = []; debris = [];
-  ui.tab = 'a';
+  ui.tab = null; document.body.classList.remove('panel-open');
+  social = null; allyList = null;
   onPlanetChanged(); updateUserChip(); renderRankPill(); setSync('');
   showLogin(message);
 }
@@ -856,7 +873,7 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- Диалоги ----------
 function closeAllOverlays() {
-  ['nickOverlay', 'profileOverlay', 'confirmOverlay', 'loginOverlay', 'mapOverlay', 'questsOverlay', 'shopOverlay', 'codeOverlay', 'chestOverlay'].forEach(id => $(id).classList.remove('open'));
+  ['nickOverlay', 'profileOverlay', 'allyOverlay', 'settingsOverlay', 'confirmOverlay', 'loginOverlay', 'mapOverlay', 'questsOverlay', 'shopOverlay', 'codeOverlay', 'chestOverlay'].forEach(id => $(id).classList.remove('open'));
   if (!forcedUpdate) $('updateOverlay').classList.remove('open');
 }
 function askConfirm({ title, text, ok = 'Да', cancel = 'Отмена', danger = false }) {
@@ -874,41 +891,6 @@ function askConfirm({ title, text, ok = 'Да', cancel = 'Отмена', danger 
   });
 }
 
-function openProfile() {
-  if (!myProfile) return;
-  const p = myProfile;
-  const online = CONFIGURED && !demo && !!session;
-  $('profileSheet').innerHTML = `
-    <div class="profile-head">
-      <div class="avatar lg" style="${avatarStyle(p.nickname)}">${esc(initialOf(p.nickname))}</div>
-      <div class="profile-name">${esc(p.nickname)}</div>
-      <div class="user-sub">${online ? 'Аккаунт Google · прогресс в облаке' : 'Демо-режим'}</div>
-    </div>
-    <div class="stat-grid four">
-      <div class="stat-box"><div class="stat-val">${p.rank ? '#' + p.rank : '—'}</div><div class="stat-lbl">Место</div></div>
-      <div class="stat-box"><div class="stat-val">${totalPrestige()}</div><div class="stat-lbl">Престижи</div></div>
-      <div class="stat-box"><div class="stat-val">${ps('earth').era + 1}</div><div class="stat-lbl">Эпоха</div></div>
-      <div class="stat-box"><div class="stat-val">${state.unlocked.length}</div><div class="stat-lbl">Планеты</div></div>
-    </div>
-    <div class="sheet-stack">
-      ${updateInfo ? `<button class="btn-main" id="pfUpdate" type="button">⬆️ Обновить до ${esc(updateInfo.version)}</button>` : ''}
-      <button class="btn-soft" id="pfCode" type="button">🎁 Ввести промокод</button>
-      <button class="btn-soft" id="pfSound" type="button">${Sound.enabled ? '🔊 Звук включён' : '🔇 Звук выключен'}</button>
-      ${online ? '<button class="btn-soft" id="pfLogout" type="button">Выйти из аккаунта</button>' : ''}
-      <button class="btn-soft danger" id="pfReset" type="button">Сбросить прогресс</button>
-      ${online ? '<button class="btn-soft danger" id="pfDelete" type="button">Удалить аккаунт</button>' : ''}
-      <button class="btn-main" id="pfClose" type="button">Закрыть</button>
-    </div>
-    <div class="version">Terra 3D · ${MY_BUILD ? 'версия 1.0.' + MY_BUILD : 'веб-версия'}</div>`;
-  $('pfClose').onclick = () => $('profileOverlay').classList.remove('open');
-  $('pfSound').onclick = () => { toggleSound(); $('pfSound').innerText = Sound.enabled ? '🔊 Звук включён' : '🔇 Звук выключен'; };
-  $('pfReset').onclick = resetGame;
-  $('pfCode').onclick = openCodes;
-  if (updateInfo) $('pfUpdate').onclick = () => { $('profileOverlay').classList.remove('open'); downloadUpdate(); };
-  if (online) { $('pfLogout').onclick = () => { $('profileOverlay').classList.remove('open'); logout(); }; $('pfDelete').onclick = deleteAccount; }
-  $('profileOverlay').classList.add('open');
-}
-
 async function resetGame() {
   const ok = await askConfirm({ title: 'Сбросить прогресс?', text: 'Все планеты, постройки, кристаллы, перки и перерождения будут удалены, а ваш результат в рейтинге обнулится.', ok: 'Сбросить', danger: true });
   if (!ok) return;
@@ -920,7 +902,6 @@ async function resetGame() {
   endAsteroid(true);
   bossCooldown = BOSS_FIRST_MIN + Math.random() * (BOSS_FIRST_MAX - BOSS_FIRST_MIN);
   saveLocal();
-  $('profileOverlay').classList.remove('open');
   onPlanetChanged(); renderRankPill();
   queueSync(500);
   fetchLeaderboard();
@@ -942,6 +923,7 @@ let lbData = null, lbLoading = false, lbError = false, lbVer = 0, lbFetching = f
 const lbPrevRanks = new Map();   // «доска:ник» → место при прошлом показе (для подсветки, кто поднялся)
 async function fetchLeaderboard() {
   if (!CONFIGURED || demo || !session || lbFetching) return;
+  if (ui.lbBoard === 'ally') { ui.allyPeriod = ui.lbPeriod; fetchAlliances(); return; }   // топ альянсов
   const key = ui.lbBoard + ':' + ui.lbPeriod;
   lbFetching = true; lbLoading = true;
   if (!lbData) { lbVer++; if (ui.tab === 'top') renderPanel(); }   // скелетон — только при первой загрузке
@@ -1009,11 +991,26 @@ function lbStat(p, board, period) {
   return `<span>🌀 ${fmt(p.prestige || 0)} · ${PL(board).stageWord} ${p.era + 1}</span><span>🏗 ${fmt(p.buildings)}</span>`;
 }
 
+function renderAllyBoardHtml(period) {
+  const L = allyList && allyList.period === period ? allyList : null;
+  let html = `<div class="lb-head"><div><div class="lb-title">🛡️ Топ альянсов <span class="lb-live ${allyLoading ? 'busy' : ''}">● live</span></div><div class="lb-sub">${L ? 'Альянсов: ' + fmt(L.total) + ' · ' : ''}Все тапы участников (без автокликера)</div></div><button class="btn-icon ${allyLoading ? 'spin' : ''}" data-action="lbrefresh" type="button">⟳</button></div>
+    <div class="lb-boards">${['all', ...PLANET_ORDER, 'ally'].map(b => `<button class="lb-board ${b === 'ally' ? 'active' : ''}" data-action="lbboard" data-id="${b}" type="button">${b === 'all' ? '🏆 Общий' : b === 'ally' ? '🛡️ Альянсы' : PL(b).icon + ' ' + PL(b).name}</button>`).join('')}</div>
+    <div class="seg lb-period">
+      <button class="seg-btn ${period === 'week' ? 'active' : ''}" data-action="lbperiod" data-id="week" type="button">📅 За неделю</button>
+      <button class="seg-btn ${period === 'all' ? 'active' : ''}" data-action="lbperiod" data-id="all" type="button">♾️ За всё время</button>
+    </div>`;
+  if (period === 'week' && L && L.week) html += `<div class="lb-week">⏳ Неделя закончится через ${fmtLeft(L.week.endsAt - Date.now())}</div>`;
+  if (!L) html += allyErr ? `<div class="empty"><div class="empty-ico">📡</div><div class="empty-title">Не удалось загрузить</div></div>` : '<div class="skeleton"></div>'.repeat(5);
+  else if (!L.alliances.length) html += `<div class="empty"><div class="empty-ico">🛡️</div><div class="empty-title">Пока пусто</div><div class="empty-text">${period === 'week' ? 'На этой неделе альянсы ещё не тапали.' : 'Альянсов пока нет — основатель должен пройти все пять планет.'}</div></div>`;
+  else html += L.alliances.map((a, i) => allyRow(a, i, false)).join('');
+  return html;
+}
 function renderLeaderboardHtml() {
   if (!CONFIGURED || demo) {
     return `<div class="empty"><div class="empty-ico">🏆</div><div class="empty-title">Рейтинг недоступен</div><div class="empty-text">Войдите через Google, чтобы соревноваться с другими игроками.</div></div>`;
   }
   const board = ui.lbBoard, period = ui.lbPeriod, me = myProfile;
+  if (board === 'ally') return renderAllyBoardHtml(period);
   const raw = lbData && lbData.board === board && lbData.period === period ? lbData : null;
   const d = raw ? { ...raw, ...mergedLeaderboard(raw, board, period) } : null;
   const boardName = board === 'all' ? 'Общий топ' : `Топ: ${PL(board).name}`;
@@ -1021,7 +1018,7 @@ function renderLeaderboardHtml() {
     ? (period === 'week' ? 'Очки, набранные с понедельника' : 'Престиж — 100 очков, эпоха или этап — 1')
     : (period === 'week' ? 'Лучший результат на этой неделе' : 'Престижи планеты, затем этап и постройки');
   let html = `<div class="lb-head"><div><div class="lb-title">🏆 ${boardName} <span class="lb-live ${lbFetching ? 'busy' : ''}" title="Топ обновляется сам">● live</span></div><div class="lb-sub">${d ? 'Игроков: ' + fmt(d.total) + ' · ' : ''}${note}</div></div><button class="btn-icon ${lbFetching ? 'spin' : ''}" data-action="lbrefresh" type="button">⟳</button></div>
-    <div class="lb-boards">${['all', ...PLANET_ORDER].map(b => `<button class="lb-board ${b === board ? 'active' : ''}" data-action="lbboard" data-id="${b}" type="button">${b === 'all' ? '🏆 Общий' : PL(b).icon + ' ' + PL(b).name}</button>`).join('')}</div>
+    <div class="lb-boards">${['all', ...PLANET_ORDER, 'ally'].map(b => `<button class="lb-board ${b === board ? 'active' : ''}" data-action="lbboard" data-id="${b}" type="button">${b === 'all' ? '🏆 Общий' : b === 'ally' ? '🛡️ Альянсы' : PL(b).icon + ' ' + PL(b).name}</button>`).join('')}</div>
     <div class="seg lb-period">
       <button class="seg-btn ${period === 'week' ? 'active' : ''}" data-action="lbperiod" data-id="week" type="button">📅 За неделю</button>
       <button class="seg-btn ${period === 'all' ? 'active' : ''}" data-action="lbperiod" data-id="all" type="button">♾️ За всё время</button>
@@ -1044,7 +1041,7 @@ function renderLeaderboardHtml() {
     const meKey = 'me:' + board + ':' + period, prevMe = lbPrevRanks.get(meKey);
     const meUp = prevMe && rank !== '—' && parseInt(rank.slice(1), 10) < prevMe;
     if (rank !== '—') lbPrevRanks.set(meKey, parseInt(rank.slice(1), 10));
-    html += `<div class="lb-me ${meUp ? 'up' : ''}"><div class="lb-me-rank">${rank}${meUp ? `<span class="lb-move">▲${prevMe - parseInt(rank.slice(1), 10)}</span>` : ''}</div><div class="avatar" style="${avatarStyle(me.nickname)}">${esc(initialOf(me.nickname))}</div><div class="lb-me-info"><div class="lb-me-name">${esc(me.nickname)}</div><div class="lb-me-stat">${stat}</div></div></div>`;
+    html += `<div class="lb-me clickable ${meUp ? 'up' : ''}" data-nick="${esc(me.nickname)}"><div class="lb-me-rank">${rank}${meUp ? `<span class="lb-move">▲${prevMe - parseInt(rank.slice(1), 10)}</span>` : ''}</div><div class="avatar" style="${avatarStyle(me.nickname)}">${esc(initialOf(me.nickname))}</div><div class="lb-me-info"><div class="lb-me-name">${esc(me.nickname)}</div><div class="lb-me-stat">${stat}</div></div></div>`;
   }
   if (d && d.players.length) {
     const myLc = me ? me.nickname.toLowerCase() : '';
@@ -1055,7 +1052,7 @@ function renderLeaderboardHtml() {
       const k = board + ':' + period + ':' + p.nickname.toLowerCase(), prev = lbPrevRanks.get(k);
       lbPrevRanks.set(k, rank);
       const mv = prev && prev !== rank ? (rank < prev ? 'up' : 'down') : '';
-      return `<div class="lb-row ${rank <= 3 ? 'top' + rank : ''} ${mine ? 'mine' : ''} ${mv}" style="--i:${Math.min(i, 12)}"><div class="lb-rank">${medal}${mv === 'up' ? `<span class="lb-move">▲${prev - rank}</span>` : ''}</div><div class="avatar sm" style="${avatarStyle(p.nickname)}">${esc(initialOf(p.nickname))}</div><div class="lb-name">${esc(p.nickname)}${mine ? '<span class="you">вы</span>' : ''}</div><div class="lb-stat">${lbStat(p, board, period)}</div></div>`;
+      return `<div class="lb-row clickable ${rank <= 3 ? 'top' + rank : ''} ${mine ? 'mine' : ''} ${mv}" data-nick="${esc(p.nickname)}" style="--i:${Math.min(i, 12)}"><div class="lb-rank">${medal}${mv === 'up' ? `<span class="lb-move">▲${prev - rank}</span>` : ''}</div><div class="avatar sm" style="${avatarStyle(p.nickname)}">${esc(initialOf(p.nickname))}</div><div class="lb-name">${esc(p.nickname)}${mine ? '<span class="you">вы</span>' : ''}</div><div class="lb-stat">${lbStat(p, board, period)}</div></div>`;
     }).join('');
   } else if (lbLoading || (!d && !lbError)) {
     html += '<div class="skeleton"></div>'.repeat(6);
@@ -1066,6 +1063,465 @@ function renderLeaderboardHtml() {
   }
   return html;
 }
+
+// ============================================================
+//  ПРОФИЛИ, ДРУЗЬЯ, АЛЬЯНСЫ
+// ============================================================
+let social = null, socialVer = 0, socialLoading = false, socialErr = false;
+const socialMsg = { text: '', kind: '' };
+let allyList = null, allyLoading = false, allyErr = false;
+const canOnline = () => CONFIGURED && !demo && !!session && !!myProfile;
+const ALLY_ERR = {
+  already_in_alliance: 'Вы уже в альянсе', need_all_planets: 'Сначала пройдите все этапы на всех планетах', invalid_name: 'Название — от 3 до 20 символов: буквы, цифры, пробел, _ - .',
+  name_taken: 'Такое название уже занято', unknown_code: 'Нет альянса с таким кодом', bad_code: 'Проверьте код', closed: 'Альянс закрыт — нужен код приглашения',
+  alliance_full: 'В альянсе нет мест', too_many_attempts: 'Слишком много попыток — подождите 10 минут', not_found: 'Альянс не найден', not_leader: 'Это может только лидер'
+};
+const FRIEND_ERR = {
+  own_code: 'Это ваш собственный код 🙂', unknown_code: 'Игрока с таким кодом нет', bad_code: 'Код — это 6 букв и цифр', already_friends: 'Вы уже друзья',
+  friends_limit: 'У вас уже 100 друзей', their_friends_limit: 'У этого игрока уже 100 друзей', too_many_attempts: 'Слишком много попыток — подождите 10 минут'
+};
+function errText(map, e) { return map[e && e.message] || (e && e.status ? 'Не получилось, попробуйте ещё раз' : 'Нет связи с сервером'); }
+
+async function fetchSocial() {
+  if (!canOnline() || socialLoading) return;
+  socialLoading = true; socialVer++;
+  try {
+    social = await api('/api/social'); socialErr = false;
+    // для достижений «Не один во Вселенной», «Экипаж», «Плечом к плечу»
+    const f = social.friends.length;
+    if (f > (state.stats.friends || 0)) state.stats.friends = f;
+    if (social.alliance && !state.stats.alliance) state.stats.alliance = 1;
+  } catch (e) { socialErr = true; }
+  socialLoading = false; socialVer++;
+  if (ui.tab === 'social') { renderPanel(); if (ui.socialTab === 'ally' && social && !social.alliance && !allyList) fetchAlliances(); }
+}
+setInterval(() => { if (playing && ui.tab === 'social' && !document.hidden) fetchSocial(); }, 20000);
+
+async function fetchAlliances() {
+  if (!canOnline() || allyLoading) return;
+  allyLoading = true; socialVer++; lbVer++;
+  const period = ui.allyPeriod;
+  try { const d = await api(`/api/alliances?period=${period}`); if (period === ui.allyPeriod) { allyList = d; allyErr = false; } } catch (e) { allyErr = true; }
+  if (ui.tab === 'top' && ui.lbBoard === 'ally' && ui.lbPeriod !== ui.allyPeriod) { ui.allyPeriod = ui.lbPeriod; }
+  allyLoading = false; socialVer++; lbVer++;
+  if (ui.tab === 'social' || ui.tab === 'top') renderPanel();
+  if (period !== ui.allyPeriod) fetchAlliances();
+}
+
+function setSocialMsg(text, kind) { socialMsg.text = text; socialMsg.kind = kind || ''; socialVer++; if (ui.tab === 'social') renderPanel(); }
+function copyText(text, toast) {
+  const done = () => showToast(toast || 'Скопировано', 2200);
+  try { navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done)); } catch (e) { fallbackCopy(text, done); }
+}
+function fallbackCopy(text, done) {
+  const t = document.createElement('textarea'); t.value = text; t.style.position = 'fixed'; t.style.opacity = '0';
+  document.body.appendChild(t); t.select();
+  try { document.execCommand('copy'); done(); } catch (e) { showToast('Код: ' + text, 5000); }
+  t.remove();
+}
+function shareFriendCode(code) {
+  const text = `Давай дружить в Terra 3D! Мой код друга: ${code}`;
+  if (navigator.share) navigator.share({ text }).catch(() => {});
+  else copyText(text, 'Приглашение скопировано — отправьте другу');
+}
+async function addFriend() {
+  const inp = $('friendCodeInput');
+  const code = inp ? inp.value.trim() : '';
+  if (!code) { setSocialMsg('Введите код друга', 'err'); return; }
+  setSocialMsg('Ищем игрока…');
+  try {
+    const r = await api('/api/friends', { method: 'POST', body: { code } });
+    if (social) social.friends = r.friends;
+    if (r.friends.length > (state.stats.friends || 0)) state.stats.friends = r.friends.length;
+    Sound.coin(); vibrate(20);
+    setSocialMsg(`🤝 ${r.nickname} теперь ваш друг!`, 'ok');
+    if (inp) inp.value = '';
+    saveLocal(); queueSync(1500);
+  } catch (e) { Sound.error(); setSocialMsg(errText(FRIEND_ERR, e), 'err'); }
+}
+async function removeFriend(nick) {
+  const ok = await askConfirm({ title: 'Удалить из друзей?', text: `${nick} пропадёт из вашего списка друзей, а вы — из его.`, ok: 'Удалить', danger: true });
+  if (!ok) return;
+  try {
+    const r = await api('/api/friends/remove', { method: 'POST', body: { nickname: nick } });
+    if (social) social.friends = r.friends;
+    socialVer++; $('profileOverlay').classList.remove('open');
+    if (ui.tab === 'social') renderPanel();
+    showToast(`${nick} больше не в друзьях`);
+  } catch (e) { showToast('Не удалось удалить. Проверьте интернет.'); }
+}
+
+function personRow(p, i, extra) {
+  return `<div class="person" data-nick="${esc(p.nickname)}" style="--i:${Math.min(i, 12)}">
+    ${extra && extra.rank ? `<div class="p-rank">${extra.rank}</div>` : ''}
+    <div class="av-wrap"><div class="avatar sm" style="${avatarStyle(p.nickname)}">${esc(initialOf(p.nickname))}</div><i class="online-dot ${p.online ? 'on' : ''}"></i></div>
+    <div class="p-info"><div class="p-name">${esc(p.nickname)}${p.leader ? '<span class="lead-badge">👑 лидер</span>' : ''}${p.me ? '<span class="you">вы</span>' : ''}</div>
+      <div class="p-sub">${extra && extra.sub ? extra.sub : `★ ${fmt(p.score || 0)}${p.rebirths ? ' · 🌀 ' + fmt(p.rebirths) : ''}${p.alliance ? ' · ' + p.alliance.emblem + ' ' + esc(p.alliance.name) : ''}`}</div></div>
+    ${extra && extra.val ? `<div class="p-val">${extra.val}</div>` : ''}
+  </div>`;
+}
+
+function renderSocialHtml() {
+  if (!canOnline()) return `<div class="empty"><div class="empty-ico">👥</div><div class="empty-title">Друзья и альянсы</div><div class="empty-text">Войдите через Google, чтобы добавлять друзей и вступать в альянсы.</div></div>`;
+  const tab = ui.socialTab;
+  const nf = social ? social.friends.length : 0;
+  let html = `<div class="seg" style="--i:0">
+      <button class="seg-btn ${tab === 'friends' ? 'active' : ''}" data-action="socialtab" data-id="friends" type="button">👥 Друзья${nf ? ' · ' + nf : ''}</button>
+      <button class="seg-btn ${tab === 'ally' ? 'active' : ''}" data-action="socialtab" data-id="ally" type="button">🛡️ Альянс</button>
+    </div>`;
+  if (!social) {
+    return html + (socialErr ? `<div class="empty"><div class="empty-ico">📡</div><div class="empty-title">Не удалось загрузить</div><div class="empty-text">Проверьте интернет — попробуем ещё раз сами.</div></div>` : '<div class="skeleton"></div>'.repeat(4));
+  }
+  const msg = `<div class="soc-msg ${socialMsg.kind}">${esc(socialMsg.text)}</div>`;
+  if (tab === 'friends') {
+    html += `<div class="code-card" style="--i:1"><div class="cc-info"><div class="cc-lbl">Ваш код друга</div><div class="cc-code">${esc(social.code)}</div></div>
+        <button class="btn-small soft" data-action="copycode" data-id="${esc(social.code)}" type="button">📋</button>
+        <button class="btn-small" data-action="sharecode" data-id="${esc(social.code)}" type="button">Пригласить</button></div>
+      <div class="add-row" style="--i:2"><input id="friendCodeInput" type="text" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Код друга"><button class="btn-small" data-action="addfriend" type="button">Добавить</button></div>
+      ${msg}
+      <div class="section-header" style="--i:3"><span>Друзья · ${nf}/${social.friendsMax}</span><span>${social.friends.filter(f => f.online).length} в сети</span></div>`;
+    html += nf ? social.friends.map((f, i) => personRow(f, i + 4)).join('')
+      : `<div class="empty"><div class="empty-ico">🤝</div><div class="empty-title">Пока никого</div><div class="empty-text">Отправьте другу свой код или введите его код выше — и вы сразу друзья у обоих.</div></div>`;
+    return html;
+  }
+  // ---- альянс ----
+  const A = social.alliance;
+  if (A) {
+    html += `<div class="ally-hero" data-ally="${A.id}" style="--i:1">
+        <div class="ally-emblem">${A.emblem}</div><div class="ally-name">${esc(A.name)}</div>
+        <div class="pf-status">${A.open ? '🔓 открытый' : '🔒 только по коду'} · лидер ${esc(A.leader || '—')}</div>
+        <div class="ally-stats">
+          <div class="stat-box"><div class="stat-val">#${A.rank}</div><div class="stat-lbl">в топе</div></div>
+          <div class="stat-box"><div class="stat-val">${fmt(A.taps)}</div><div class="stat-lbl">тапов всего</div></div>
+          <div class="stat-box"><div class="stat-val">${A.size}/${A.max}</div><div class="stat-lbl">участников</div></div>
+        </div>
+      </div>
+      <div class="code-card" style="--i:2"><div class="cc-info"><div class="cc-lbl">Код приглашения</div><div class="cc-code">${esc(A.code || '')}</div></div>
+        <button class="btn-small soft" data-action="copycode" data-id="${esc(A.code || '')}" type="button">📋</button></div>
+      <div class="section-header" style="--i:3"><span>👆 Топ альянса по тапам</span><span>за неделю: ${fmt(A.weekTaps)}</span></div>
+      ${A.members.map((m, i) => personRow(m, i + 4, { rank: i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1, sub: `★ ${fmt(m.score)}`, val: `👆 ${fmt(m.taps)}` })).join('')}
+      <div class="sheet-actions" style="--i:6;margin-top:4px">
+        <button class="btn-soft" data-action="alliance" data-id="${A.id}" type="button">${A.isLeader ? '⚙️ Управление' : '🛡️ Подробнее'}</button>
+      </div>`;
+    return html;
+  }
+  html += `<div class="add-row" style="--i:1"><input id="allyCodeInput" type="text" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Код альянса"><button class="btn-small" data-action="allyjoincode" type="button">Вступить</button></div>
+    ${msg}`;
+  // сервер проверит ещё раз по облачному сохранению; локально — чтобы кнопка появилась сразу
+  if (social.canCreate || planetsMaxedCount() === PLANET_ORDER.length) {
+    html += `<div class="ally-lock" style="--i:2;border-style:solid;border-color:rgba(250,204,21,0.6)"><div class="al-title">👑 Вы прошли всю Солнечную систему!</div><div class="al-text">Теперь можно основать свой альянс: игроки вступают по коду или из списка, а альянсы соревнуются по тапам.</div><button class="btn-main" data-action="allycreate" type="button">🛡️ Создать альянс</button></div>`;
+  } else {
+    const pr = social.planets || {};
+    html += `<div class="ally-lock" style="--i:2"><div class="al-title">🔒 Свой альянс</div><div class="al-text">Создать альянс может тот, кто прошёл все этапы на всех пяти планетах. Вступить в чужой можно уже сейчас.</div>
+      <div class="pf-planets">${PLANET_ORDER.map(pid => { const x = pr[pid] || { best: 0, max: PL(pid).eras.length - 1, open: false }; const done = x.open && x.best >= x.max;
+        return `<div class="pf-pl ${x.open ? '' : 'locked'} ${done ? 'max' : ''}"><span class="pl-ico">${PL(pid).icon}</span><span class="pl-n">${PL(pid).name}</span><span class="pl-bar"><i style="width:${x.open ? Math.round((x.best + 1) / (x.max + 1) * 100) : 0}%"></i></span><span class="pl-v">${done ? '✅' : x.open ? `${x.best + 1}/${x.max + 1}` : '🔒'}</span></div>`; }).join('')}</div></div>`;
+  }
+  html += `<div class="section-header" style="--i:3"><span>🏆 Альянсы</span><span>${allyList ? 'всего ' + fmt(allyList.total) : ''}</span></div>`;
+  if (!allyList) html += allyErr ? '<div class="empty-text" style="text-align:center">Не удалось загрузить список</div>' : '<div class="skeleton"></div>'.repeat(3);
+  else if (!allyList.alliances.length) html += `<div class="empty"><div class="empty-ico">🛡️</div><div class="empty-title">Альянсов пока нет</div><div class="empty-text">Пройдите все планеты и станьте первым основателем!</div></div>`;
+  else html += allyList.alliances.map((a, i) => allyRow(a, i, true)).join('');
+  return html;
+}
+// сколько планет пройдено до последнего этапа (для альянса и достижения)
+function planetsMaxedCount() { return PLANET_ORDER.filter(pid => isUnlocked(pid) && Math.max(state.stats.maxEra[pid] || 0, ps(pid).era) >= PL(pid).eras.length - 1).length; }
+function allyRow(a, i, joinBtn) {
+  const rank = i + 1, medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank;
+  const mine = social && social.alliance && social.alliance.id === a.id || (allyList && allyList.mine === a.id);
+  return `<div class="ally-row ${mine ? 'mine' : ''}" data-ally="${a.id}" style="--i:${Math.min(i + 4, 14)}">
+    <div class="lb-rank">${medal}</div><div class="a-emb">${a.emblem}</div>
+    <div class="p-info"><div class="p-name">${esc(a.name)}</div><div class="p-sub">👥 ${a.members}/${allyList ? allyList.max : 30} · ${a.open ? '🔓 открыт' : '🔒 по коду'}</div></div>
+    ${joinBtn && a.open && !(social && social.alliance) && a.members < (allyList ? allyList.max : 30)
+      ? `<button class="btn-small" data-action="allyjoin" data-id="${a.id}" type="button">Вступить</button>`
+      : `<div class="p-val">👆 ${fmt(a.taps)}</div>`}
+  </div>`;
+}
+
+async function joinAlliance(body) {
+  try {
+    const r = await api('/api/alliance/join', { method: 'POST', body });
+    if (social) social.alliance = r.alliance;
+    state.stats.alliance = 1;
+    Sound.unlock(); vibrate(30);
+    setSocialMsg('');
+    showToast(`${r.alliance.emblem} Добро пожаловать в альянс «${r.alliance.name}»!`, 4000);
+    $('allyOverlay').classList.remove('open');
+    ui.socialTab = 'ally';
+    if (ui.tab !== 'social') openPanel('social'); else renderPanel();
+    saveLocal(); queueSync(1500);
+  } catch (e) { Sound.error(); const t = errText(ALLY_ERR, e); setSocialMsg(t, 'err'); if ($('allyOverlay').classList.contains('open')) showToast(t); }
+}
+function joinAllianceByCode() {
+  const inp = $('allyCodeInput');
+  const code = inp ? inp.value.trim() : '';
+  if (!code) { setSocialMsg('Введите код приглашения', 'err'); return; }
+  joinAlliance({ code });
+}
+
+// Окно альянса: участники, тапы; лидер — управление (открыт/закрыт, эмблема, новый код, исключить)
+async function openAlliance(id) {
+  if (!id || !CONFIGURED) return;
+  const sheet = $('allySheet');
+  sheet.innerHTML = `<div class="pf-cover"><div class="spinner"></div><div class="pf-status">Загружаем альянс…</div></div>`;
+  $('allyOverlay').classList.add('open'); Sound.ui();
+  let A;
+  try { A = await api(`/api/alliance?id=${id}`); } catch (e) {
+    sheet.innerHTML = `<div class="pf-cover"><button class="btn-icon" type="button" onclick="document.getElementById('allyOverlay').classList.remove('open')">✕</button><div class="ally-emblem">🛡️</div><div class="pf-status">${e.status === 404 ? 'Альянс больше не существует' : 'Не удалось загрузить — проверьте интернет'}</div></div>`;
+    return;
+  }
+  renderAllianceSheet(A);
+}
+function renderAllianceSheet(A) {
+  const sheet = $('allySheet');
+  const inAny = social && social.alliance;
+  const canJoin = canOnline() && !inAny && A.open && A.size < A.max;
+  sheet.innerHTML = `
+    <div class="pf-cover"><button class="btn-icon" id="allyClose" type="button">✕</button>
+      <div class="ally-emblem">${A.emblem}</div><div class="pf-name">${esc(A.name)}</div>
+      <div class="pf-status">#${A.rank} в топе альянсов · ${A.open ? '🔓 открытый' : '🔒 только по коду'}</div>
+      <div class="ally-stats">
+        <div class="stat-box"><div class="stat-val">${fmt(A.taps)}</div><div class="stat-lbl">тапов всего</div></div>
+        <div class="stat-box"><div class="stat-val">${fmt(A.weekTaps)}</div><div class="stat-lbl">за неделю</div></div>
+        <div class="stat-box"><div class="stat-val">${A.size}/${A.max}</div><div class="stat-lbl">участников</div></div>
+      </div>
+    </div>
+    <div class="pf-body">
+      ${A.isMember && A.code ? `<div class="code-card"><div class="cc-info"><div class="cc-lbl">Код приглашения</div><div class="cc-code">${esc(A.code)}</div></div><button class="btn-small soft" id="allyCopy" type="button">📋</button></div>` : ''}
+      ${A.isLeader ? `<div class="pf-sec">Управление</div>
+        <div class="set-group">
+          <div class="set-row"><span class="s-ico">🔓</span><span class="s-lbl">Открытый альянс<small>Вступить может любой из списка; иначе — только по коду</small></span><button class="switch ${A.open ? 'on' : ''}" id="allyOpen" type="button"></button></div>
+          <div class="set-row"><span class="s-ico">🔑</span><span class="s-lbl">Новый код приглашения<small>Старый перестанет работать</small></span><button class="btn-small soft" id="allyNewCode" type="button">Сменить</button></div>
+        </div>
+        <div class="emblem-pick" id="allyEmblems">${(social && social.emblems || []).map(e => `<button type="button" class="${e === A.emblem ? 'sel' : ''}" data-emb="${e}">${e}</button>`).join('')}</div>` : ''}
+      <div class="pf-sec">👆 Участники по тапам</div>
+      <div class="pf-planets">${A.members.map((m, i) => `<div class="person" data-nick="${esc(m.nickname)}">
+        <div class="p-rank">${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</div>
+        <div class="av-wrap"><div class="avatar sm" style="${avatarStyle(m.nickname)}">${esc(initialOf(m.nickname))}</div><i class="online-dot ${m.online ? 'on' : ''}"></i></div>
+        <div class="p-info"><div class="p-name">${esc(m.nickname)}${m.leader ? '<span class="lead-badge">👑 лидер</span>' : ''}${m.me ? '<span class="you">вы</span>' : ''}</div><div class="p-sub">★ ${fmt(m.score)}</div></div>
+        <div class="p-val">👆 ${fmt(m.taps)}</div>
+        ${A.isLeader && !m.me ? `<button class="btn-small danger" data-kick="${esc(m.nickname)}" type="button">✕</button>` : ''}
+      </div>`).join('')}</div>
+      <div class="sheet-stack">
+        ${canJoin ? `<button class="btn-main" id="allyJoin" type="button">🛡️ Вступить</button>` : ''}
+        ${A.isMember ? `<button class="btn-soft danger" id="allyLeave" type="button">Выйти из альянса</button>` : ''}
+      </div>
+    </div>`;
+  $('allyClose').onclick = () => $('allyOverlay').classList.remove('open');
+  if ($('allyCopy')) $('allyCopy').onclick = () => copyText(A.code, 'Код приглашения скопирован');
+  if ($('allyJoin')) $('allyJoin').onclick = () => joinAlliance({ id: A.id });
+  if ($('allyLeave')) $('allyLeave').onclick = () => leaveAlliance(A);
+  const settings = async (body) => {
+    try { const r = await api('/api/alliance/settings', { method: 'POST', body }); if (social) social.alliance = r.alliance; socialVer++; renderAllianceSheet(r.alliance); Sound.ui(); if (body.newCode) showToast('Новый код: ' + r.alliance.code); }
+    catch (e) { showToast(errText(ALLY_ERR, e)); }
+  };
+  if ($('allyOpen')) $('allyOpen').onclick = () => settings({ open: !A.open });
+  if ($('allyNewCode')) $('allyNewCode').onclick = () => settings({ newCode: true });
+  if ($('allyEmblems')) $('allyEmblems').onclick = (e) => { const b = e.target.closest('[data-emb]'); if (b && b.dataset.emb !== A.emblem) settings({ emblem: b.dataset.emb }); };
+  sheet.querySelectorAll('[data-kick]').forEach(b => b.onclick = async (e) => {
+    e.stopPropagation();
+    const nick = b.dataset.kick;
+    if (!(await askConfirm({ title: 'Исключить из альянса?', text: `${nick} покинет «${A.name}». Его тапы останутся в счёте альянса.`, ok: 'Исключить', danger: true }))) return;
+    try { const r = await api('/api/alliance/kick', { method: 'POST', body: { nickname: nick } }); if (social) social.alliance = r.alliance; socialVer++; renderAllianceSheet(r.alliance); }
+    catch (err) { showToast(errText(ALLY_ERR, err)); }
+  });
+  sheet.querySelectorAll('.person[data-nick]').forEach(r => r.onclick = (e) => { if (!e.target.closest('button')) openPlayer(r.dataset.nick); });
+}
+async function leaveAlliance(A) {
+  const last = A.size <= 1;
+  const ok = await askConfirm({ title: 'Выйти из альянса?', text: last ? 'Вы последний участник — альянс будет удалён.' : A.isLeader ? 'Лидером станет участник с наибольшим вкладом.' : 'Вступить снова можно будет по коду или из списка.', ok: 'Выйти', danger: true });
+  if (!ok) return;
+  try {
+    await api('/api/alliance/leave', { method: 'POST' });
+    if (social) social.alliance = null;
+    allyList = null; socialVer++;
+    $('allyOverlay').classList.remove('open');
+    showToast('Вы вышли из альянса');
+    if (ui.tab === 'social') { renderPanel(); fetchAlliances(); }
+  } catch (e) { showToast(errText(ALLY_ERR, e)); }
+}
+function openAllianceCreate() {
+  const emblems = (social && social.emblems) || ['🛡️'];
+  let pick = emblems[0];
+  const sheet = $('allySheet');
+  sheet.innerHTML = `
+    <div class="pf-cover"><button class="btn-icon" id="allyClose" type="button">✕</button><div class="ally-emblem" id="acEmb">${pick}</div><div class="pf-name">Новый альянс</div><div class="pf-status">Название и эмблему увидят все игроки</div></div>
+    <div class="pf-body">
+      <input class="nick-input" id="acName" type="text" maxlength="20" autocomplete="off" spellcheck="false" placeholder="Название альянса">
+      <div class="emblem-pick" id="acEmblems">${emblems.map(e => `<button type="button" class="${e === pick ? 'sel' : ''}" data-emb="${e}">${e}</button>`).join('')}</div>
+      <div class="set-group"><div class="set-row"><span class="s-ico">🔓</span><span class="s-lbl">Открытый<small>Можно вступить из списка без кода</small></span><button class="switch on" id="acOpen" type="button"></button></div></div>
+      <div class="nick-msg" id="acMsg"></div>
+      <button class="btn-main" id="acCreate" type="button">🛡️ Основать альянс</button>
+    </div>`;
+  $('allyOverlay').classList.add('open'); Sound.ui();
+  $('allyClose').onclick = () => $('allyOverlay').classList.remove('open');
+  $('acEmblems').onclick = (e) => { const b = e.target.closest('[data-emb]'); if (!b) return; pick = b.dataset.emb; $('acEmb').textContent = pick; $('acEmblems').querySelectorAll('button').forEach(x => x.classList.toggle('sel', x === b)); };
+  $('acOpen').onclick = () => $('acOpen').classList.toggle('on');
+  $('acCreate').onclick = async () => {
+    const name = $('acName').value.trim();
+    $('acCreate').disabled = true;
+    try {
+      if (!social || !social.canCreate) {   // прогресс мог ещё не дойти до сервера — сначала синхронизация
+        for (let i = 0; i < 40 && syncing; i++) await new Promise(r => setTimeout(r, 150));
+        await syncNow();
+      }
+      const r = await api('/api/alliance/create', { method: 'POST', body: { name, emblem: pick, open: $('acOpen').classList.contains('on') } });
+      if (social) social.alliance = r.alliance;
+      state.stats.alliance = 1; socialVer++;
+      Sound.evolve(); vibrate([30, 40, 30]);
+      showToast(`${r.alliance.emblem} Альянс «${r.alliance.name}» основан!`, 4000);
+      renderAllianceSheet(r.alliance);
+      if (ui.tab === 'social') renderPanel();
+      saveLocal(); queueSync(1500);
+    } catch (e) { $('acMsg').textContent = errText(ALLY_ERR, e); $('acMsg').className = 'nick-msg err'; $('acCreate').disabled = false; Sound.error(); }
+  };
+}
+
+// ---------- профиль игрока ----------
+function fmtPlay(sec) { const h = Math.floor(sec / 3600); return h >= 1 ? `${fmt(h)} ч` : `${Math.floor(sec / 60)} мин`; }
+function profileStatsHtml(st, extra) {
+  const box = (ico, v, l) => `<div class="stat-box"><div class="stat-ico">${ico}</div><div class="stat-val">${v}</div><div class="stat-lbl">${l}</div></div>`;
+  return `<div class="stat-grid three">
+    ${box('★', fmt(extra.score || 0), 'очки')}${box('🌀', fmt(extra.rebirths || 0), 'престижи')}${box('🏆', extra.rank ? '#' + extra.rank : '—', 'место')}
+    ${box('👆', fmt(st.taps || 0), 'тапы')}${box('🏗️', fmt(st.built || 0), 'постройки')}${box('☄️', fmt(st.asteroids || 0), 'астероиды')}
+    ${box('🏅', `${st.achievements || 0}/${ACHIEVEMENTS.length}`, 'достижения')}${box('⏱️', fmtPlay(st.playSec || 0), 'в игре')}${box('🧰', fmt(st.chests || 0), 'сундуки')}
+  </div>`;
+}
+function profilePlanetsHtml(pl) {
+  return `<div class="pf-planets">${PLANET_ORDER.map(pid => {
+    const x = pl[pid] || { open: false, stage: 0, best: 0, prestige: 0 };
+    const max = PL(pid).eras.length - 1, done = x.open && x.best >= max;
+    return `<div class="pf-pl ${x.open ? '' : 'locked'} ${done ? 'max' : ''}"><span class="pl-ico">${PL(pid).icon}</span><span class="pl-n">${PL(pid).name}</span>
+      <span class="pl-bar"><i style="width:${x.open ? Math.round((x.stage + 1) / (max + 1) * 100) : 0}%"></i></span>
+      <span class="pl-v">${x.open ? `${PL(pid).stageWord === 'Эпоха' ? 'эп.' : 'эт.'} ${x.stage + 1}${x.prestige ? ' · 🌀' + fmt(x.prestige) : ''}` : '🔒'}</span></div>`;
+  }).join('')}</div>`;
+}
+function localPlanets() {
+  const out = {};
+  PLANET_ORDER.forEach(pid => { out[pid] = { open: isUnlocked(pid), stage: ps(pid).era, best: Math.max(state.stats.maxEra[pid] || 0, ps(pid).era), prestige: prestigeCount(pid) }; });
+  return out;
+}
+
+// Свой профиль: статистика по локальному прогрессу (он свежее), место — с сервера
+function openProfile() {
+  if (!myProfile) return;
+  const p = myProfile, online = canOnline();
+  const st = { ...state.stats, achievements: (state.quests.ach || []).length };
+  const A = social && social.alliance;
+  $('profileSheet').innerHTML = `
+    <div class="pf-cover"><button class="btn-icon" id="pfClose" type="button">✕</button>
+      <div class="avatar lg" style="${avatarStyle(p.nickname)}">${esc(initialOf(p.nickname))}</div>
+      <div class="pf-name">${esc(p.nickname)}</div>
+      <div class="pf-status">${online ? '<i class="online-dot on"></i> Аккаунт Google · прогресс в облаке' : 'Гость — прогресс не сохраняется'}</div>
+      ${A ? `<div class="pf-ally" data-ally="${A.id}">${A.emblem} ${esc(A.name)}</div>` : ''}
+    </div>
+    <div class="pf-body">
+      ${profileStatsHtml(st, { score: Math.max(p.score || 0, progressOf(state)), rebirths: totalPrestige(), rank: p.rank })}
+      <div class="pf-sec">Планеты</div>
+      ${profilePlanetsHtml(localPlanets())}
+      ${online && social ? `<div class="code-card"><div class="cc-info"><div class="cc-lbl">Ваш код друга</div><div class="cc-code">${esc(social.code)}</div></div><button class="btn-small" id="pfShare" type="button">Пригласить</button></div>` : ''}
+      <div class="sheet-stack">
+        ${updateInfo ? `<button class="btn-main" id="pfUpdate" type="button">⬆️ Обновить до ${esc(updateInfo.version)}</button>` : ''}
+        ${online ? `<button class="btn-soft" id="pfFriends" type="button">👥 Друзья и альянсы</button>` : ''}
+        <button class="btn-soft" id="pfSettings" type="button">⚙️ Настройки и аккаунт</button>
+      </div>
+      <div class="version">Terra 3D · ${MY_BUILD ? 'версия 1.0.' + MY_BUILD : 'веб-версия'}</div>
+    </div>`;
+  const close = () => $('profileOverlay').classList.remove('open');
+  $('pfClose').onclick = close;
+  $('pfSettings').onclick = () => { close(); openSettings(); };
+  if ($('pfFriends')) $('pfFriends').onclick = () => { close(); ui.socialTab = 'friends'; openPanel('social'); };
+  if ($('pfShare')) $('pfShare').onclick = () => shareFriendCode(social.code);
+  if (updateInfo) $('pfUpdate').onclick = () => { close(); downloadUpdate(); };
+  const ally = $('profileSheet').querySelector('.pf-ally');
+  if (ally) ally.onclick = () => openAlliance(+ally.dataset.ally);
+  $('profileOverlay').classList.add('open');
+  if (online && !social) fetchSocial().then(() => { if ($('profileOverlay').classList.contains('open') && social && !$('pfShare')) openProfile(); });
+}
+
+// Чужой профиль (из топа, друзей, альянса)
+async function openPlayer(nick) {
+  if (!nick) return;
+  if (myProfile && nick.toLowerCase() === myProfile.nickname.toLowerCase()) { openProfile(); return; }
+  if (!CONFIGURED) return;
+  const sheet = $('profileSheet');
+  sheet.innerHTML = `<div class="pf-cover"><button class="btn-icon" id="pfClose" type="button">✕</button><div class="avatar lg" style="${avatarStyle(nick)}">${esc(initialOf(nick))}</div><div class="pf-name">${esc(nick)}</div><div class="pf-status"><span class="spinner"></span></div></div>`;
+  $('pfClose').onclick = () => $('profileOverlay').classList.remove('open');
+  $('profileOverlay').classList.add('open'); Sound.ui();
+  let d;
+  try { d = await api(`/api/player?nick=${encodeURIComponent(nick)}`); }
+  catch (e) { sheet.querySelector('.pf-status').textContent = e.status === 404 ? 'Игрок не найден' : 'Не удалось загрузить профиль'; return; }
+  const ago = d.online ? '<i class="online-dot on"></i> в сети' : '<i class="online-dot"></i> не в сети';
+  sheet.innerHTML = `
+    <div class="pf-cover"><button class="btn-icon" id="pfClose" type="button">✕</button>
+      <div class="avatar lg" style="${avatarStyle(d.nickname)}">${esc(initialOf(d.nickname))}</div>
+      <div class="pf-name">${esc(d.nickname)}</div>
+      <div class="pf-status">${ago} · 👥 ${fmt(d.friends)} ${plural(d.friends, 'друг', 'друга', 'друзей')}${d.friend ? ' · 🤝 ваш друг' : ''}</div>
+      ${d.alliance ? `<div class="pf-ally" data-ally="${d.alliance.id}">${d.alliance.emblem} ${esc(d.alliance.name)}</div>` : ''}
+    </div>
+    <div class="pf-body">
+      ${profileStatsHtml(d.stats, d)}
+      <div class="pf-sec">Планеты</div>
+      ${profilePlanetsHtml(d.planets)}
+      <div class="version">В игре с ${new Date(d.since).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</div>
+      ${d.friend ? `<button class="btn-soft danger" id="pfUnfriend" type="button">Удалить из друзей</button>` : ''}
+    </div>`;
+  $('pfClose').onclick = () => $('profileOverlay').classList.remove('open');
+  if ($('pfUnfriend')) $('pfUnfriend').onclick = () => removeFriend(d.nickname);
+  const ally = sheet.querySelector('.pf-ally');
+  if (ally) ally.onclick = () => openAlliance(+ally.dataset.ally);
+}
+
+// ============================================================
+//  НАСТРОЙКИ
+// ============================================================
+function openSettings() { renderSettings(); $('settingsOverlay').classList.add('open'); Sound.ui(); }
+function renderSettings() {
+  const online = canOnline();
+  const sw = (id, on) => `<button class="switch ${on ? 'on' : ''}" id="${id}" type="button" aria-pressed="${on}"></button>`;
+  $('settingsSheet').innerHTML = `
+    <div class="q-head"><div><h2>⚙️ Настройки</h2></div><button class="btn-icon" id="setClose" type="button">✕</button></div>
+    <div class="set-title">Звук</div>
+    <div class="set-group">
+      <div class="set-row"><span class="s-ico">🎵</span><span class="s-lbl">Фоновая музыка<small>Спокойный космический эмбиент</small></span>${sw('setMusic', Sound.music)}</div>
+      <div class="set-row vol"><input class="slider" id="setMusicVol" type="range" min="0" max="100" value="${Math.round(Sound.musicVolume * 100)}" ${Sound.music ? '' : 'disabled'}></div>
+      <div class="set-row"><span class="s-ico">🔊</span><span class="s-lbl">Звуки<small>Тапы, покупки, астероиды</small></span>${sw('setSfx', Sound.enabled)}</div>
+      <div class="set-row vol"><input class="slider" id="setSfxVol" type="range" min="0" max="100" value="${Math.round(Sound.sfxVolume * 100)}" ${Sound.enabled ? '' : 'disabled'}></div>
+    </div>
+    <div class="set-title">Игра</div>
+    <div class="set-group">
+      <div class="set-row"><span class="s-ico">📳</span><span class="s-lbl">Вибрация</span>${sw('setVibe', prefs.vibrate)}</div>
+      <div class="set-row"><span class="s-ico">🔋</span><span class="s-lbl">Экономия батареи<small>Меньше эффектов и частиц</small></span>${sw('setLowfx', prefs.lowfx)}</div>
+      <div class="set-row"><span class="s-ico">🔢</span><span class="s-lbl">Числа<small>${prefs.sci ? 'Научная запись: 1.25e9' : 'Сокращения: 1.25B'}</small></span>
+        <div class="seg3"><button type="button" id="setNumShort" class="${prefs.sci ? '' : 'on'}">1.25B</button><button type="button" id="setNumSci" class="${prefs.sci ? 'on' : ''}">1.25e9</button></div></div>
+    </div>
+    <div class="set-title">Аккаунт</div>
+    <div class="sheet-stack">
+      ${myProfile ? '<button class="btn-soft" id="setProfile" type="button">👤 Мой профиль и статистика</button>' : ''}
+      <button class="btn-soft" id="setCode" type="button">🎁 Ввести промокод</button>
+      ${updateInfo ? `<button class="btn-main" id="setUpdate" type="button">⬆️ Обновить до ${esc(updateInfo.version)}</button>` : ''}
+      ${(session || demo) ? `<button class="btn-soft" id="setLogout" type="button">🚪 ${demo ? 'Выйти из гостевой игры' : 'Выйти из аккаунта'}</button>` : ''}
+      ${playing ? '<button class="btn-soft danger" id="setReset" type="button">♻️ Сбросить прогресс</button>' : ''}
+      ${online ? '<button class="btn-soft danger" id="setDelete" type="button">🗑️ Удалить аккаунт</button>' : ''}
+    </div>
+    <div class="version">Terra 3D · ${MY_BUILD ? 'версия 1.0.' + MY_BUILD : 'веб-версия'} · <a href="privacy.html" target="_blank" rel="noopener" style="color:inherit">Конфиденциальность</a></div>`;
+  const close = () => $('settingsOverlay').classList.remove('open');
+  $('setClose').onclick = close;
+  $('setMusic').onclick = () => { Sound.setMusic(!Sound.music); renderSettings(); };
+  $('setSfx').onclick = () => { Sound.toggle(); renderSettings(); };
+  $('setMusicVol').oninput = (e) => Sound.setMusicVolume(e.target.value / 100);
+  $('setSfxVol').oninput = (e) => Sound.setSfxVolume(e.target.value / 100);
+  $('setSfxVol').onchange = () => Sound.coin();
+  $('setVibe').onclick = () => { prefs.vibrate = !prefs.vibrate; savePrefs(); vibrate(25); renderSettings(); };
+  $('setLowfx').onclick = () => { prefs.lowfx = !prefs.lowfx; savePrefs(); resizeCanvas(); renderSettings(); };
+  $('setNumShort').onclick = () => { prefs.sci = false; savePrefs(); renderSettings(); refreshUIFull(); };
+  $('setNumSci').onclick = () => { prefs.sci = true; savePrefs(); renderSettings(); refreshUIFull(); };
+  if ($('setProfile')) $('setProfile').onclick = () => { close(); openProfile(); };
+  $('setCode').onclick = () => { close(); openCodes(); };
+  if ($('setUpdate')) $('setUpdate').onclick = () => { close(); downloadUpdate(); };
+  if ($('setLogout')) $('setLogout').onclick = () => { close(); logout(); };
+  if ($('setReset')) $('setReset').onclick = () => { close(); resetGame(); };
+  if ($('setDelete')) $('setDelete').onclick = () => { close(); deleteAccount(); };
+}
+function refreshUIFull() { lastPanelSig = ''; buildResourceBar(); refreshUI(); }
 
 // ============================================================
 //  CANVAS: ПЛАНЕТЫ
@@ -1122,8 +1578,8 @@ function initCanvas() {
   window.addEventListener('resize', resizeCanvas);
   if (window.ResizeObserver) {
     const ro = new ResizeObserver(resizeCanvas);
-    ro.observe($('viewport'));
-    ro.observe(document.querySelector('.era-card'));
+    ro.observe($('hud'));
+    ro.observe($('dock'));
   }
   stars = [];
   for (let i = 0; i < 90; i++) stars.push({ x: Math.random(), y: Math.random(), z: Math.random() * 0.8 + 0.2, s: Math.random() * 1.6 + 0.5, a: Math.random() * 0.6 + 0.4, tw: Math.random() * 6.28 });
@@ -1138,24 +1594,34 @@ function initCanvas() {
   requestAnimationFrame(renderFrame);
 }
 
+// Планета занимает всё место между верхней панелью и низом экрана (или открытой панелью — тогда она
+// плавно уезжает вверх и становится меньше, но по ней можно тапать). Цель — layout, рисуем с плавным переходом.
+const layout = { tx: 200, ty: 150, tr: 90, init: false };
+let dprNow = 1;
 function resizeCanvas() {
-  const vp = $('viewport');
-  const dpr = Math.min(window.devicePixelRatio || 1, 3);
-  cw = vp.clientWidth || 380;
-  ch = vp.clientHeight || 260;
+  const dpr = dprNow = Math.min(window.devicePixelRatio || 1, prefs.lowfx ? 1.5 : 3);
+  cw = window.innerWidth || 380;
+  ch = window.innerHeight || 640;
   canvas.width = Math.round(cw * dpr);
   canvas.height = Math.round(ch * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const top = document.querySelector('.viewport-top'), card = document.querySelector('.era-card');
-  const topH = (top ? top.offsetHeight : 40) + 4;
-  const footH = (card ? card.offsetHeight : 92) + 14;
-  const avail = Math.max(60, ch - topH - footH);
-  planetRadius = Math.max(34, Math.min(cw * 0.29, avail / 2.5));
-  cx = cw / 2;
-  cy = topH + planetRadius * 0.6 + planetRadius;
+  const stage = $('stage');
+  const hudH = $('hud').offsetHeight || 90, dockH = $('dock').offsetHeight || 130;
+  stage.style.setProperty('--hud-h', hudH + 'px');
+  stage.style.setProperty('--dock-h', dockH + 'px');
+  const sheetH = Math.round(Math.max(230, Math.min(ch * 0.6, ch - hudH - dockH - 170)));
+  stage.style.setProperty('--sheet-h', sheetH + 'px');
+  const top = hudH + 2, bottom = (ui.tab ? ch - dockH - sheetH : ch - dockH) - 6;
+  const areaH = Math.max(80, bottom - top);
+  const sideW = cw < 560 ? 66 : 84;   // круглые кнопки по бокам
+  layout.tr = Math.max(26, Math.min((cw - 2 * sideW) / 2 / 1.08, areaH / 2.5, 240));
+  layout.tx = cw / 2;
+  layout.ty = top + areaH / 2 + layout.tr * 0.1;   // чуть ниже середины: сверху место для шапки
+  if (!layout.init) { layout.init = true; planetRadius = layout.tr; cx = layout.tx; cy = layout.ty; }
 }
 
 function spawnParticles(x, y, color, count = 15, speed = 4, size = 3) {
+  if (prefs.lowfx) count = Math.ceil(count / 3);
   for (let i = 0; i < count; i++) {
     const a = Math.random() * Math.PI * 2, sp = Math.random() * speed + 1;
     particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, r: Math.random() * size + 1, color, life: 1.0, decay: 0.04 });
@@ -1356,11 +1822,98 @@ function drawJupiter(R, era, now) {
   if (era >= 9) { ctx.fillStyle = `rgba(254,249,195,${0.28 + 0.06 * Math.sin(now / 500)})`; ctx.fillRect(cx - R, cy - R, R * 2, R * 2); }
 }
 
+const VENUS_SPOTS = [
+  { lon: 0.3, lat: -0.2, r: 0.4 }, { lon: 1.6, lat: 0.3, r: 0.34 }, { lon: 2.8, lat: -0.35, r: 0.38 },
+  { lon: 3.9, lat: 0.1, r: 0.42 }, { lon: 5.1, lat: -0.05, r: 0.3 }
+];
+const MERCURY_CRATERS = [
+  { lon: 0.2, lat: -0.3, r: 0.16 }, { lon: 0.9, lat: 0.25, r: 0.1 }, { lon: 1.5, lat: -0.05, r: 0.22 }, { lon: 2.2, lat: 0.45, r: 0.12 },
+  { lon: 2.7, lat: -0.4, r: 0.14 }, { lon: 3.3, lat: 0.1, r: 0.26 }, { lon: 4.0, lat: -0.25, r: 0.11 }, { lon: 4.6, lat: 0.35, r: 0.17 },
+  { lon: 5.2, lat: -0.1, r: 0.13 }, { lon: 5.8, lat: 0.2, r: 0.2 }, { lon: 1.1, lat: -0.55, r: 0.09 }, { lon: 3.8, lat: 0.55, r: 0.08 }
+];
+// Венера: под густыми золотистыми облаками — раскалённые равнины; облака редеют, появляются моря и сады
+function drawVenus(R, era, now) {
+  // поверхность (видна, когда облака поредеют)
+  fillSphere(R, era >= 7 ? ['#a16207', '#78350f', '#1c0a02'] : ['#c2410c', '#7c2d12', '#1c0702']);
+  VENUS_SPOTS.forEach((b, i) => {
+    const p = projectBlob(b, R); if (!p) return;
+    if (era >= 7) { // моря
+      ctx.fillStyle = 'rgba(14,116,144,0.92)'; ctx.beginPath(); ctx.ellipse(p.px, p.py, p.radX * 0.9, p.radY * 0.62, 0.2, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(56,189,248,0.45)'; ctx.beginPath(); ctx.ellipse(p.px - p.radX * 0.2, p.py - p.radY * 0.12, p.radX * 0.5, p.radY * 0.3, 0.2, 0, Math.PI * 2); ctx.fill();
+    } else { // вулканические равнины
+      ctx.fillStyle = `rgba(250,204,21,${0.25 + 0.15 * Math.sin(now / 600 + i)})`; ctx.beginPath(); ctx.ellipse(p.px, p.py, p.radX * 0.35, p.radY * 0.25, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    if (era >= 8) { // сады
+      ctx.fillStyle = 'rgba(34,197,94,0.85)'; ctx.beginPath(); ctx.ellipse(p.px + p.radX * 0.8, p.py + p.radY * 0.35, p.radX * 0.5, p.radY * 0.35, -0.3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(244,114,182,0.7)'; ctx.beginPath(); ctx.arc(p.px + p.radX * 0.75, p.py + p.radY * 0.3, Math.max(1.5, p.radX * 0.08), 0, Math.PI * 2); ctx.fill();
+    }
+    if (era >= 5 && era < 7) { ctx.fillStyle = 'rgba(41,37,36,0.55)'; ctx.beginPath(); ctx.ellipse(p.px - p.radX * 0.5, p.py + p.radY * 0.3, p.radX * 0.35, p.radY * 0.22, 0, 0, Math.PI * 2); ctx.fill(); } // углеродные шахты
+  });
+  // облака: волнистые полосы, медленно текут; к 7-му этапу редеют
+  const cloudA = era >= 9 ? 0.25 : era >= 8 ? 0.32 : era >= 7 ? 0.42 : era >= 6 ? 0.66 : 0.9;
+  const tints = era >= 3 && era < 6 ? ['254,249,195', '217,249,157', '253,224,71'] : ['254,243,199', '253,230,138', '250,204,21'];
+  for (let i = 0; i < 9; i++) {
+    const y = cy - R + (i + 0.5) * (R * 2 / 9);
+    const w = Math.sqrt(Math.max(0, R * R - (y - cy) * (y - cy)));
+    const wav = Math.sin(now / 2200 + i * 1.3 + cloudAngle * 2) * R * 0.07;
+    ctx.fillStyle = `rgba(${tints[i % 3]},${cloudA * (0.6 + 0.4 * ((i * 37) % 10) / 10)})`;
+    ctx.beginPath(); ctx.ellipse(cx + wav, y, w * 1.05, R * 0.14, Math.sin(i + now / 4000) * 0.08, 0, Math.PI * 2); ctx.fill();
+  }
+  drawClouds(R, cloudA * 0.5, '255,251,235');
+  if (era >= 6 && era < 9) { // дожди
+    ctx.strokeStyle = 'rgba(186,230,253,0.35)'; ctx.lineWidth = 1;
+    for (let k = 0; k < 14; k++) { const x = cx - R + ((k * 53 + now / 20) % (R * 2)), y = cy - R * 0.4 + ((k * 31 + now / 9) % (R * 1.2)); ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 2, y + 7); ctx.stroke(); }
+  }
+  if (era >= 2) drawLights(R, VENUS_SPOTS.map(b => ({ ...b, lat: b.lat * 0.6, r: 0.22 })), Math.min(4, era - 1), '254,240,138'); // парящие города
+  if (era >= 4 && era < 9) { ctx.fillStyle = 'rgba(15,23,42,0.18)'; ctx.fillRect(cx - R, cy - R, R * 2, R * 2); } // тень зонтика
+  if (era >= 9) { const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R); g.addColorStop(0, `rgba(254,249,195,${0.2 + 0.06 * Math.sin(now / 500)})`); g.addColorStop(1, 'rgba(253,230,138,0)'); ctx.fillStyle = g; ctx.fillRect(cx - R, cy - R, R * 2, R * 2); }
+}
+// Меркурий: серые кратеры; рельсовый город на экваторе, солнечные фермы, кузницы
+function drawMercury(R, era, now) {
+  fillSphere(R, ['#e7e5e4', '#8a8580', '#1c1917']);
+  MERCURY_CRATERS.forEach((c, i) => {
+    const p = projectBlob(c, R); if (!p) return;
+    ctx.fillStyle = 'rgba(41,37,36,0.45)'; ctx.beginPath(); ctx.ellipse(p.px, p.py, p.radX, p.radY * 0.95, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(245,245,244,0.4)'; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.ellipse(p.px - p.radX * 0.08, p.py - p.radY * 0.08, p.radX, p.radY * 0.95, 0, Math.PI * 0.9, Math.PI * 1.9); ctx.stroke();
+    if (era >= 3 && i % 3 === 0) { // солнечные фермы
+      ctx.fillStyle = 'rgba(30,58,138,0.85)'; ctx.fillRect(p.px - p.radX * 0.6, p.py - p.radY * 0.35, p.radX * 1.2, p.radY * 0.7);
+      ctx.strokeStyle = 'rgba(147,197,253,0.7)'; ctx.lineWidth = 0.8;
+      for (let k = 1; k < 4; k++) { const x = p.px - p.radX * 0.6 + p.radX * 0.3 * k; ctx.beginPath(); ctx.moveTo(x, p.py - p.radY * 0.35); ctx.lineTo(x, p.py + p.radY * 0.35); ctx.stroke(); }
+    }
+    if (era >= 8 && i % 4 === 1) { ctx.strokeStyle = `rgba(251,146,60,${0.7 + 0.3 * Math.sin(now / 250 + i)})`; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(p.px - p.radX, p.py); ctx.lineTo(p.px, p.py + p.radY * 0.4); ctx.lineTo(p.px + p.radX, p.py - p.radY * 0.2); ctx.stroke(); } // кузницы
+  });
+  if (era >= 1) { // лёд в полярных кратерах
+    ctx.fillStyle = 'rgba(224,242,254,0.85)';
+    ctx.beginPath(); ctx.ellipse(cx, cy - R * 0.96, R * 0.22, R * 0.08, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx, cy + R * 0.96, R * 0.18, R * 0.07, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  if (era >= 2) { // рельсы по экватору и город-поезд
+    ctx.strokeStyle = 'rgba(203,213,225,0.75)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(cx, cy + R * 0.05, R, R * 0.1, 0, 0, Math.PI); ctx.stroke();
+    const a = (now / 7000) % (Math.PI * 2), x = cx + Math.cos(a) * R * 0.95, y = cy + R * 0.05 + Math.sin(a) * R * 0.1;
+    if (Math.sin(a) > 0) { ctx.fillStyle = '#fde047'; ctx.shadowColor = '#fde047'; ctx.shadowBlur = 8; ctx.fillRect(x - 5, y - 2, 10, 4); ctx.shadowBlur = 0; }
+  }
+  if (era >= 5) drawLights(R, MERCURY_CRATERS.map(c => ({ ...c, r: c.r + 0.15 })), Math.min(4, era - 3), '94,234,212');
+  if (era >= 7) { // искры антиматерии
+    for (let k = 0; k < 6; k++) { const a = now / 900 + k * 1.05, rr = R * (0.3 + 0.5 * ((k * 7) % 10) / 10); ctx.fillStyle = `rgba(216,180,254,${0.5 + 0.5 * Math.sin(now / 180 + k)})`; ctx.beginPath(); ctx.arc(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * 0.6, 1.8, 0, Math.PI * 2); ctx.fill(); }
+  }
+  // раскалённая дневная сторона
+  const hot = ctx.createRadialGradient(cx - R * 0.6, cy - R * 0.5, 0, cx - R * 0.6, cy - R * 0.5, R * 1.1);
+  hot.addColorStop(0, 'rgba(251,191,36,0.28)'); hot.addColorStop(1, 'rgba(251,191,36,0)');
+  ctx.fillStyle = hot; ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
+}
+
 // шапки
 function drawHat(R) {
   const id = state.look[cur()].hat;
   if (!id) return;
   const u = R / 100;
+  if (id === 'hat_flowers' || id === 'hat_shades') {   // венок и очки — значок над планетой
+    const it = COSMETICS.find(c => c.id === id), sz = R * (id === 'hat_shades' ? 0.75 : 0.62);
+    const bob = Math.sin(performance.now() / 700) * R * 0.02;
+    ctx.drawImage(emojiSprite(it.icon), cx - sz / 2, cy - R - sz * (id === 'hat_shades' ? 0.42 : 0.62) + bob, sz, sz);
+    return;
+  }
   ctx.save();
   ctx.translate(cx, cy - R);
   ctx.lineJoin = 'round';
@@ -1529,7 +2082,7 @@ function renderFrame(now) {
   const dt = Math.min(0.1, Math.max(0, (now - lastFrameTime) / 1000));
   lastFrameTime = now;
   const f = dt * 60;
-  ctx.setTransform(Math.min(window.devicePixelRatio || 1, 3), 0, 0, Math.min(window.devicePixelRatio || 1, 3), 0, 0);
+  ctx.setTransform(dprNow, 0, 0, dprNow, 0, 0);
   ctx.clearRect(0, 0, cw, ch);
   if (shake > 0.2) { ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake); shake *= Math.pow(0.88, f); } else shake = 0;
 
@@ -1549,6 +2102,10 @@ function renderFrame(now) {
     shoot.x += 7 * f; shoot.y += 3.4 * f; shoot.life -= 0.025 * f;
     if (shoot.life <= 0) shoot = null;
   }
+
+  // плавный переход планеты при открытии/закрытии панели
+  const k = Math.min(1, 0.16 * f);
+  planetRadius += (layout.tr - planetRadius) * k; cx += (layout.tx - cx) * k; cy += (layout.ty - cy) * k;
 
   const pid = cur(), era = ps(pid).era;
   const speed = speedMult();
@@ -1580,6 +2137,15 @@ function renderFrame(now) {
     if (L && L.ring) ringPart(R * 1.45, R * 0.32, -0.2, back, back ? 'rgba(253,224,71,0.35)' : 'rgba(253,224,71,0.85)', 2.5);
     if (L && L.oring) ringPart(R * 1.22, R * 0.2, 0.28, back, back ? 'rgba(125,211,252,0.3)' : 'rgba(125,211,252,0.9)', 2, '#7dd3fc');
     if (pid === 'jupiter' && era >= 4) ringPart(R * 1.55, R * 0.28, 0.15, back, back ? 'rgba(103,232,249,0.3)' : 'rgba(103,232,249,0.85)', 3, '#67e8f9');
+    if (pid === 'mercury' && era >= 6) { // зеркальное кольцо
+      ctx.setLineDash([3, 4]);
+      ringPart(R * 1.3, R * 0.24, 0.1, back, back ? 'rgba(224,242,254,0.35)' : 'rgba(240,249,255,0.95)', 2.5, '#e0f2fe');
+      ctx.setLineDash([]);
+    }
+    if (pid === 'mercury' && era >= 9) { // решётка сферы Дайсона
+      for (let k = 0; k < 3; k++) ringPart(R * (1.4 + k * 0.05), R * (0.45 + k * 0.28), -0.5 + k * 0.5, back, back ? 'rgba(253,224,71,0.18)' : 'rgba(253,224,71,0.6)', 1.5, '#fde047');
+    }
+    if (pid === 'venus' && era >= 2) ringPart(R * 1.25, R * 0.22, -0.12, back, back ? 'rgba(254,240,138,0.18)' : 'rgba(254,240,138,0.5)', 1, null); // трассы аэростатов
     if (pid === 'mars' && era >= 8) { // кольцо Фобоса — из обломков
       ctx.setLineDash([2, 5]);
       ringPart(R * 1.42, R * 0.24, -0.15, back, back ? 'rgba(216,180,254,0.35)' : 'rgba(216,180,254,0.95)', 3);
@@ -1634,6 +2200,8 @@ function renderFrame(now) {
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
   if (pid === 'earth') drawEarth(R, era, now);
   else if (pid === 'mars') drawMars(R, era, now);
+  else if (pid === 'venus') drawVenus(R, era, now);
+  else if (pid === 'mercury') drawMercury(R, era, now);
   else drawJupiter(R, era, now);
 
   const shade = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.35, R * 0.1, cx + R * 0.2, cy + R * 0.2, R * 1.1);
@@ -1661,6 +2229,25 @@ function renderFrame(now) {
     cg.addColorStop(0, `rgba(254,240,138,${0.5 + 0.1 * Math.sin(now / 400)})`); cg.addColorStop(1, 'rgba(254,240,138,0)');
     ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(cx, cy, R * 1.7, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
+  }
+  // Венера: солнечный зонтик между планетой и Солнцем
+  if (pid === 'venus' && era >= 4) {
+    const ux = cx - R * 0.98, uy = cy - R * 1.12, ur = R * 0.27;
+    ctx.save(); ctx.translate(ux, uy); ctx.rotate(-0.62);
+    ctx.fillStyle = 'rgba(30,41,59,0.92)'; ctx.strokeStyle = 'rgba(203,213,225,0.9)'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.ellipse(0, 0, ur, ur * 0.28, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(148,163,184,0.6)'; ctx.lineWidth = 1;
+    for (let k = -2; k <= 2; k++) { ctx.beginPath(); ctx.moveTo(k * ur * 0.4, -ur * 0.25); ctx.lineTo(k * ur * 0.4, ur * 0.25); ctx.stroke(); }
+    ctx.restore();
+  }
+  // Меркурий: рельсотрон швыряет грузы в космос
+  if (pid === 'mercury' && era >= 4) {
+    const ang = -0.75, x1 = cx + Math.cos(ang) * R, y1 = cy + Math.sin(ang) * R;
+    ctx.strokeStyle = 'rgba(147,197,253,0.8)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x1 + Math.cos(ang) * R * 0.18, y1 + Math.sin(ang) * R * 0.18); ctx.stroke();
+    for (let k = 0; k < 3; k++) {
+      const t = ((now / 1400) + k / 3) % 1, d = R * (0.2 + t * 1.6);
+      ctx.fillStyle = `rgba(191,219,254,${1 - t})`; ctx.beginPath(); ctx.arc(x1 + Math.cos(ang) * d, y1 + Math.sin(ang) * d, 2, 0, Math.PI * 2); ctx.fill();
+    }
   }
   // Марс: космический лифт — трос от экватора к станции
   if (pid === 'mars' && era >= 7) {
@@ -2190,6 +2777,8 @@ function achValue(a) {
   if (a.kind === 'rebirths') return totalPrestige();
   if (a.kind === 'planet') return isUnlocked(a.key) ? 1 : 0;
   if (a.kind === 'style') return state.ownedCosmetics.length;
+  if (a.kind === 'hours') return Math.floor((state.stats.playSec || 0) / 3600);
+  if (a.kind === 'allmax') return planetsMaxedCount();
   return 0;
 }
 function questState() {
@@ -2399,7 +2988,7 @@ function travelTo(pid, firstTime) {
   if (pid === cur() && !firstTime) { closeMap(); return; }
   traveling = true;
   const tv = $('travel');
-  $('travelText').textContent = `Курс на ${PL(pid).name === 'Земля' ? 'Землю' : PL(pid).name}…`;
+  $('travelText').textContent = `Курс на ${({ earth: 'Землю', venus: 'Венеру' })[pid] || PL(pid).name}…`;
   $('travelIcon').textContent = PL(pid).icon;
   tv.classList.remove('open'); void tv.offsetWidth;
   tv.classList.add('open');
@@ -2409,7 +2998,6 @@ function travelTo(pid, firstTime) {
   setTimeout(() => {
     state.planet = pid;
     endAsteroid(true);
-    ui.tab = 'a';
     onPlanetChanged();
     pulseScale = 0.6;
     saveLocal();
@@ -2430,8 +3018,8 @@ function travelTo(pid, firstTime) {
 //  КАРТА СОЛНЕЧНОЙ СИСТЕМЫ
 // ============================================================
 const MAP_ORBITS = [
-  { id: 'mercury', r: 13, size: 3,   dur: 40,  color: 'radial-gradient(circle at 35% 30%, #d6d3d1, #57534e)', decor: true },
-  { id: 'venus',   r: 20, size: 4.6, dur: 70,  color: 'radial-gradient(circle at 35% 30%, #fef3c7, #d97706)', decor: true },
+  { id: 'mercury', r: 13, size: 3.6, dur: 40,  color: 'radial-gradient(circle at 35% 30%, #e7e5e4, #78716c 55%, #292524)' },
+  { id: 'venus',   r: 20, size: 4.8, dur: 70,  color: 'radial-gradient(circle at 35% 30%, #fef9c3, #facc15 45%, #a16207)' },
   { id: 'earth',   r: 28, size: 6,   dur: 110, color: 'radial-gradient(circle at 35% 30%, #7dd3fc 0 20%, #16a34a 21% 32%, #0369a1 33% 60%, #082f49)' },
   { id: 'mars',    r: 36, size: 5,   dur: 170, color: 'radial-gradient(circle at 35% 30%, #fdba74, #c2410c 60%, #431407)' },
   { id: 'belt',    r: 42, belt: true },
@@ -2505,16 +3093,17 @@ function costSig(s) { return Object.entries(s).map(([k, v]) => getRes(k) >= v ? 
 
 function panelSig() {
   const t = ui.tab, pid = cur();
+  if (!t) return '';
   const base = pid + ps(pid).era + t;
+  if (t === 'social') return base + socialVer;
+  if (t === 'perks') return base + state.gems + GLOBAL_PERKS.map(p => perk(p.id)).join() + PL(pid).perks.map(p => ppk(pid, p.id)).join();
   if (t === 'top') { const l = myLocalEntry(ui.lbBoard, ui.lbPeriod); return base + lbVer + ui.lbBoard + ui.lbPeriod + (myProfile ? myProfile.rank + ':' + myProfile.score : '') + totalPrestige() + (l ? ':' + l.score : ''); }
-  if (t === 'rebirth') return base + prestigeInfo(pid).goals.map(g => g.ok ? 1 : (g.kind === 'stage' ? 0 : Math.floor(g.have / g.goal * 20))).join('') + prestigeCount(pid)
-    + GLOBAL_PERKS.map(p => (perk(p.id) < p.max && state.gems >= perkCost(p, perk(p.id))) ? 1 : 0).join('')
-    + PL(pid).perks.map(p => (ppk(pid, p.id) < p.max && state.gems >= perkCost(p, ppk(pid, p.id))) ? 1 : 0).join('');
+  if (t === 'rebirth') return base + prestigeInfo(pid).goals.map(g => g.ok ? 1 : (g.kind === 'stage' ? 0 : Math.floor(g.have / g.goal * 20))).join('') + prestigeCount(pid) + state.unlocked.join();
   if (t === 'shop') return base + ui.shopTab + COSMETICS.map(c => state.ownedCosmetics.includes(c.id) ? 'o' : (c.code || c.chest) ? 'c' : costSig(c.cost)).join('') + state.unlocked.join();
-  return base + ui.buyMode + PL(pid).buildings.filter(b => b.tab === t).map(b => b.u <= ps(pid).era
+  return base + ui.buyMode + PL(pid).buildings.map(b => b.u <= ps(pid).era
     ? (ui.buyMode === 'max' ? maxAffordable(pid, b) : costSig(bulkCost(pid, b, ui.buyMode))) : 'x').join('|');
 }
-function refreshUI() { renderHeaderAndEra(); if (panelSig() !== lastPanelSig) renderPanel(); updateQuestBadge(); }
+function refreshUI() { renderHeaderAndEra(); if (ui.tab && panelSig() !== lastPanelSig) renderPanel(); updateQuestBadge(); }
 
 function buildResourceBar() {
   $('resourcesBar').innerHTML = PL(cur()).res.map(k =>
@@ -2527,12 +3116,8 @@ function buildResourceBar() {
      </div>`;
 }
 function syncTabButtons() {
-  const P = PL(cur());
-  P.tabs.forEach(t => {
-    const b = document.querySelector(`.tab-btn[data-tab="${t.id}"]`);
-    if (b) { b.querySelector('.tab-ico').textContent = t.icon; b.querySelector('.tab-lbl').textContent = t.label; }
-  });
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === ui.tab));
+  if (ui.tab) $('panelTitle').innerHTML = panelTitle();
 }
 function updateUserChip() {
   const name = myProfile ? myProfile.nickname : 'Гость';
@@ -2540,16 +3125,16 @@ function updateUserChip() {
   av.innerText = myProfile ? initialOf(name) : '?';
   av.setAttribute('style', myProfile ? avatarStyle(name) : 'background:#334155');
   $('hudName').innerText = name;
-  $('logoutBtn').hidden = !(session || demo);
 }
-function renderRankPill() { $('rankPill').innerText = (myProfile && myProfile.rank) ? `🏆 #${myProfile.rank}` : '🏆 —'; }
-function updateSoundBtn() { const b = $('soundBtn'); b.textContent = Sound.enabled ? '🔊' : '🔇'; b.title = Sound.enabled ? 'Выключить звук' : 'Включить звук'; }
+function renderRankPill() { $('rankText').innerText = (myProfile && myProfile.rank) ? `#${myProfile.rank}` : 'Топ'; }
+function updateSoundBtn() { if ($('settingsOverlay').classList.contains('open')) renderSettings(); }
 function toggleSound() { Sound.toggle(); updateSoundBtn(); }
 
 // Смена планеты: шапка, вкладки, фон, всё остальное
 function onPlanetChanged() {
   if (!isUnlocked(state.planet)) state.planet = 'earth';
   buildResourceBar();
+  requestAnimationFrame(resizeCanvas);
   syncTabButtons();
   applyBodyBg();
   document.body.dataset.planet = cur();
@@ -2574,9 +3159,12 @@ function renderHeaderAndEra() {
   $('speedBadge').hidden = sp <= 1 && !bl;
   $('speedBadge').innerText = [bl ? `⚡×2 ${fmtCountdown(bl / 1000)}` : '', sp > 1 ? `⏳${Math.round(sp * 100)}%` : ''].filter(Boolean).join(' ');
   $('speedBadge').classList.toggle('boost', !!bl);
-  const ap = $('astPill');
-  if (activeAsteroid) { ap.innerText = activeAsteroid.golden ? '✨ Бой!' : '☄️ Бой!'; ap.className = 'pill alert'; }
-  else { ap.innerText = playing ? `☄️ ${fmtCountdown(bossCooldown)}` : '☄️ —'; ap.className = 'pill'; }
+  $('astText').innerText = activeAsteroid ? 'Бой!' : playing ? fmtCountdown(bossCooldown) : '—';
+  $('astPill').classList.toggle('alert', !!activeAsteroid);
+  // подсказки на кнопках меню: престиж готов, есть на что улучшить
+  $('dotRebirth').hidden = !canPrestige(pid);
+  $('dotPerks').hidden = !(GLOBAL_PERKS.some(p => perk(p.id) < p.max && state.gems >= perkCost(p, perk(p.id)))
+    || P.perks.some(p => ppk(pid, p.id) < p.max && state.gems >= perkCost(p, ppk(pid, p.id))));
 
   const E = P.eras[st.era], N = P.eras[st.era + 1];
   $('eraTitle').innerHTML = `<span class="era-num" style="--halo:${E.halo}">${stageLabel(pid)}</span> ${esc(E.name)}`;
@@ -2642,13 +3230,22 @@ function planetPerkEffect(p, lvl) {
   return lvl ? `Скидка −${Math.round(p.step * lvl * 100)}%` : `−${Math.round(p.step * 100)}% за уровень`;
 }
 
+function panelTitle() {
+  const P = PL(cur()), at = `<small>${P.icon} ${P.name}</small>`;
+  return ({ build: '🏗️ Постройки ' + at, perks: '🌳 Улучшения ' + at, rebirth: '🌀 Престиж ' + at, top: '🏆 Рейтинг',
+    social: '👥 Друзья и альянсы', shop: '🎩 Образ ' + at })[ui.tab] || '';
+}
+
 function renderPanel() {
+  if (!ui.tab) return;
   const container = $('panelContent');
   const scroll = container.scrollTop;
   const tab = ui.tab, pid = cur(), P = PL(pid), st = ps(pid);
 
   if (tab === 'top') {
     container.innerHTML = renderLeaderboardHtml();
+  } else if (tab === 'social') {
+    container.innerHTML = renderSocialHtml();
   } else if (tab === 'rebirth') {
     const info = prestigeInfo(pid);
     let i = 0;
@@ -2667,10 +3264,15 @@ function renderPanel() {
         </button>
         <div class="pp-row">${others}</div>
       </div>
+      <div class="shop-note" style="--i:${i++}">Кристаллы 💎 тратятся во вкладке «🌳 Улучшения».</div>`;
+  } else if (tab === 'perks') {
+    let i = 0;
+    container.innerHTML = `
       <div class="section-header" style="--i:${i++}"><span>🌳 Древо Вечности · все планеты</span><span>💎 ${fmt(state.gems)}</span></div>
       ${GLOBAL_PERKS.map(p => perkCard(p, perk(p.id), 'perk', 'perk-' + p.id, i++, p.effect(perk(p.id)))).join('')}
       <div class="section-header" style="--i:${i++}"><span>${P.icon} Перки планеты · ${P.name}</span><span></span></div>
-      ${P.perks.map(p => perkCard(p, ppk(pid, p.id), 'pperk', 'pp-' + p.id, i++, planetPerkEffect(p, ppk(pid, p.id)))).join('')}`;
+      ${P.perks.map(p => perkCard(p, ppk(pid, p.id), 'pperk', 'pp-' + p.id, i++, planetPerkEffect(p, ppk(pid, p.id)))).join('')}
+      <div class="shop-note" style="--i:${i++}">Кристаллы дают престиж, астероиды, сундуки и квесты.</div>`;
   } else if (tab === 'shop') {
     const look = state.look[pid];
     const items = COSMETICS.filter(c => c.type === ui.shopTab);
@@ -2705,13 +3307,14 @@ function renderPanel() {
           </div>`;
       }).join('')}`;
   } else {
+    // все постройки планеты в одной вкладке — по порядку открытия
     const mult = prodMult(pid);
-    const list = P.buildings.filter(b => b.tab === tab);
+    const list = P.buildings.map((b, k) => ({ b, k })).sort((x, y) => x.b.u - y.b.u || x.k - y.k).map(x => x.b);
     const open = list.filter(b => b.u <= st.era);
     const next = list.find(b => b.u > st.era);
     const modes = `<div class="buy-modes" style="--i:0"><span class="bm-lbl">Купить</span>${BUY_MODES.map(m => `<button class="bm-btn ${ui.buyMode === m ? 'active' : ''}" data-action="buymode" data-id="${m}" type="button">${m === 'max' ? 'MAX' : '×' + m}</button>`).join('')}</div>`;
-    container.innerHTML = (open.length ? modes : '') + open.map((b, i) => buildingCard(pid, b, mult, i + 1)).join('')
-      + (next ? `<div class="card teaser" style="--i:${open.length}"><div class="icon-tile locked-tile">${next.icon}</div><div class="card-info"><div class="card-title"><span>🔒 ${next.name}</span></div><div class="card-desc" style="margin:0;">Откроется: ${stageLabel(pid, next.u)} «${P.eras[next.u].name}»</div></div></div>` : '')
+    container.innerHTML = (open.length ? modes : '') + open.map((b, i) => buildingCard(pid, b, mult, Math.min(i + 1, 14))).join('')
+      + (next ? `<div class="card teaser" style="--i:${Math.min(open.length + 1, 15)}"><div class="icon-tile locked-tile">${next.icon}</div><div class="card-info"><div class="card-title"><span>🔒 ${next.name}</span></div><div class="card-desc" style="margin:0;">Откроется: ${stageLabel(pid, next.u)} «${P.eras[next.u].name}»</div></div></div>` : '')
       + (!open.length && !next ? '<div class="empty"><div class="empty-ico">🌌</div><div class="empty-text">Здесь пока пусто</div></div>' : '');
   }
   container.scrollTop = scroll;
@@ -2724,15 +3327,28 @@ function animatePanel() {
   clearTimeout(animatePanel.t);
   animatePanel.t = setTimeout(() => c.classList.remove('anim'), 900);
 }
-function selectTab(name) {
-  if (ui.tab !== name) Sound.ui();
+// Кнопка меню открывает свою панель; повторное нажатие — закрывает (на экране снова только планета)
+function openPanel(name) {
+  const was = ui.tab;
   ui.tab = name;
+  document.body.classList.add('panel-open');
+  $('panelSheet').setAttribute('aria-hidden', 'false');
   syncTabButtons();
-  $('panelContent').scrollTop = 0;
-  renderPanel();
-  animatePanel();
+  if (was !== name) { $('panelContent').scrollTop = 0; renderPanel(); animatePanel(); Sound.ui(); }
+  resizeCanvas();
   if (name === 'top') fetchLeaderboard();
+  if (name === 'social') fetchSocial();
 }
+function closePanel() {
+  if (!ui.tab) return;
+  ui.tab = null;
+  document.body.classList.remove('panel-open');
+  $('panelSheet').setAttribute('aria-hidden', 'true');
+  syncTabButtons();
+  resizeCanvas();
+  Sound.ui();
+}
+function selectTab(name) { if (ui.tab === name) closePanel(); else openPanel(name); }
 
 function setupEvents() {
   $('tabsBar').addEventListener('click', (e) => { const btn = e.target.closest('.tab-btn'); if (btn) selectTab(btn.dataset.tab); });
@@ -2752,9 +3368,45 @@ function setupEvents() {
     else if (a === 'buymode') setBuyMode(id);
     else if (a === 'codes') openCodes();
     else if (a === 'chests') openShop();
+    else if (a === 'player') openPlayer(btn.dataset.nick || id);
+    else if (a === 'alliance') openAlliance(+id);
+    else if (a === 'socialtab') { if (ui.socialTab !== id) { ui.socialTab = id; socialMsg.text = ''; Sound.ui(); renderPanel(); animatePanel(); if (id === 'ally') fetchAlliances(); } }
+    else if (a === 'copycode') copyText(id, 'Код скопирован — отправьте его другу');
+    else if (a === 'sharecode') shareFriendCode(id);
+    else if (a === 'addfriend') addFriend();
+    else if (a === 'allyjoin') joinAlliance({ id: +id });
+    else if (a === 'allyjoincode') joinAllianceByCode();
+    else if (a === 'allycreate') openAllianceCreate();
+    else if (a === 'allyperiod') { if (ui.allyPeriod !== id) { ui.allyPeriod = id; Sound.ui(); fetchAlliances(); } }
   });
+  // строки рейтинга, друзья, участники альянса — открывают профиль (вся строка, а не только кнопка)
+  $('panelContent').addEventListener('click', (e) => {
+    if (e.target.closest('button')) return;
+    const row = e.target.closest('[data-nick], [data-ally]');
+    if (!row) return;
+    if (row.dataset.nick) openPlayer(row.dataset.nick); else openAlliance(+row.dataset.ally);
+  });
+  $('panelContent').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'friendCodeInput') addFriend(); if (e.key === 'Enter' && e.target.id === 'allyCodeInput') joinAllianceByCode(); });
+  $('panelClose').addEventListener('click', closePanel);
+  // смахнуть панель вниз — закрыть
+  let dragY = null;
+  $('panelHead').addEventListener('pointerdown', (e) => { if (e.target.closest('button')) return; dragY = e.clientY; });
+  window.addEventListener('pointermove', (e) => {
+    if (dragY === null) return;
+    const dy = Math.max(0, e.clientY - dragY);
+    $('panelSheet').style.transform = dy ? `translateY(${dy}px)` : '';
+  });
+  window.addEventListener('pointerup', (e) => {
+    if (dragY === null) return;
+    const dy = e.clientY - dragY; dragY = null;
+    $('panelSheet').style.transform = '';
+    if (dy > 70) closePanel();
+  });
+  $('settingsBtn').addEventListener('click', openSettings);
+  $('settingsOverlay').addEventListener('click', (e) => { if (e.target === $('settingsOverlay')) $('settingsOverlay').classList.remove('open'); });
+  $('allyOverlay').addEventListener('click', (e) => { if (e.target === $('allyOverlay')) $('allyOverlay').classList.remove('open'); });
   $('evolveBtn').addEventListener('click', evolveEra);
-  $('rankPill').addEventListener('click', () => { if (playing) selectTab('top'); });
+  $('rankPill').addEventListener('click', () => { if (playing) openPanel('top'); });
   $('mapBtn').addEventListener('click', openMap);
   $('mapClose').addEventListener('click', () => { closeMap(); Sound.ui(); });
   $('mapOverlay').addEventListener('click', (e) => {
@@ -2770,8 +3422,6 @@ function setupEvents() {
   });
   $('cinema').addEventListener('click', closeCinema);
   $('userChip').addEventListener('click', openProfile);
-  $('soundBtn').addEventListener('click', toggleSound);
-  $('logoutBtn').addEventListener('click', () => logout());
   $('demoBtn').addEventListener('click', startDemo);
   $('googleBtn').addEventListener('click', startGoogleLogin);
   $('loginCancel').addEventListener('click', () => { takePendingLogin(); showLogin(''); });
@@ -2809,18 +3459,22 @@ function setupEvents() {
 }
 
 // ---------- Мост с Android-приложением ----------
-window.__terraPause = function () { if (playing) { saveLocal(); syncNow(true); } };
+window.__terraPause = function () { Sound.suspend(); if (playing) { saveLocal(); syncNow(true); } };
+window.__terraResume = function () { Sound.resume(); };
 window.__terraBack = function () {
   if (cinemaOpen) { cinemaShownAt = 0; closeCinema(); return true; }
   if ($('confirmOverlay').classList.contains('open')) { $('confirmCancel').click(); return true; }
   if ($('mapOverlay').classList.contains('open')) { closeMap(); return true; }
+  if ($('allyOverlay').classList.contains('open')) { $('allyOverlay').classList.remove('open'); return true; }
   if ($('profileOverlay').classList.contains('open')) { $('profileOverlay').classList.remove('open'); return true; }
+  if ($('settingsOverlay').classList.contains('open')) { $('settingsOverlay').classList.remove('open'); return true; }
   if (forcedUpdate) return true;   // окно «Нужно обновление» не закрывается
   if ($('updateOverlay').classList.contains('open')) { $('updateOverlay').classList.remove('open'); return true; }
   if ($('questsOverlay').classList.contains('open')) { $('questsOverlay').classList.remove('open'); return true; }
   if ($('chestOverlay').classList.contains('open')) { if ($('chestOverlay').classList.contains('opened')) closeChest(); else revealChest(); return true; }
   if ($('shopOverlay').classList.contains('open')) { $('shopOverlay').classList.remove('open'); return true; }
   if ($('codeOverlay').classList.contains('open')) { $('codeOverlay').classList.remove('open'); return true; }
+  if (ui.tab) { closePanel(); return true; }
   return false;
 };
 

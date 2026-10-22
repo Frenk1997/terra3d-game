@@ -60,3 +60,47 @@ CREATE TABLE IF NOT EXISTS promo_fails (
   at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_promo_fails ON promo_fails (sub, at);
+
+-- ===== Друзья и альянсы =====
+-- Код для добавления в друзья, засчитанные тапы (для топа альянсов), альянс и последняя активность
+CREATE TABLE IF NOT EXISTS player_meta (
+  sub         TEXT PRIMARY KEY,
+  code        TEXT NOT NULL UNIQUE,        -- код, по которому добавляют в друзья
+  taps        INTEGER NOT NULL DEFAULT 0,  -- тапы, засчитанные сервером (с ограничением скорости)
+  taps_seen   INTEGER NOT NULL DEFAULT 0,  -- последний счётчик тапов из сохранения игрока
+  taps_at     INTEGER NOT NULL DEFAULT 0,
+  alliance_id INTEGER,
+  ally_taps   INTEGER NOT NULL DEFAULT 0,  -- тапы, принесённые нынешнему альянсу
+  ally_at     INTEGER NOT NULL DEFAULT 0,  -- когда вступил
+  seen_at     INTEGER NOT NULL DEFAULT 0   -- последняя активность (для «в сети»)
+);
+CREATE INDEX IF NOT EXISTS idx_meta_alliance ON player_meta (alliance_id, ally_taps DESC);
+
+CREATE TABLE IF NOT EXISTS friends (
+  a  TEXT NOT NULL,
+  b  TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (a, b)                       -- дружба хранится в обе стороны
+);
+
+CREATE TABLE IF NOT EXISTS alliances (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  name       TEXT NOT NULL,
+  name_lc    TEXT NOT NULL UNIQUE,
+  emblem     TEXT NOT NULL,
+  code       TEXT NOT NULL UNIQUE,         -- код приглашения
+  leader     TEXT NOT NULL,
+  open       INTEGER NOT NULL DEFAULT 1,   -- 1 — вступить может любой из списка
+  taps       INTEGER NOT NULL DEFAULT 0,   -- все тапы альянса за всё время
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alliances_taps ON alliances (taps DESC);
+
+CREATE TABLE IF NOT EXISTS alliance_weekly (
+  week        INTEGER NOT NULL,
+  alliance_id INTEGER NOT NULL,
+  taps        INTEGER NOT NULL DEFAULT 0,
+  at          INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (week, alliance_id)
+);
+CREATE INDEX IF NOT EXISTS idx_alliance_weekly ON alliance_weekly (week, taps DESC);

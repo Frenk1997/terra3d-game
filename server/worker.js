@@ -375,8 +375,8 @@ const WEEK_MS = 7 * 86400000;
 const WEEK_OFFSET = 4 * 86400000 - 3 * 3600000;
 const weekId = (t) => Math.floor((t - WEEK_OFFSET) / WEEK_MS);
 const weekEnd = (w) => (w + 1) * WEEK_MS + WEEK_OFFSET;
-const PLANET_MAX = { earth: 14, mars: 9, jupiter: 9 };  // последняя эпоха/этап (с нуля)
-const PLANET_IDS = ['earth', 'mars', 'jupiter'];
+const PLANET_MAX = { earth: 14, mars: 9, jupiter: 9, venus: 9, mercury: 9 };  // последняя эпоха/этап (с нуля)
+const PLANET_IDS = ['earth', 'mars', 'jupiter', 'venus', 'mercury'];
 const BOARDS = ['all', ...PLANET_IDS];
 // Счёт планеты = престижи * 10 000 000 + этап * 100 000 + постройки — сначала престижи, потом этап, потом постройки
 const PLANET_STEP = 100000;
@@ -502,6 +502,7 @@ async function handleRedeem(request, sub, env) {
 // ---------- игровое API ----------
 async function handleMe(sub, env) {
   const p = await getPlayer(env, sub);
+  if (p) await touchMeta(env, sub, p);
   return json({ uid: sub, profile: p ? await profileView(env, p) : null, save: parseSave(p) });
 }
 
@@ -608,6 +609,24 @@ async function handleSync(request, sub, env) {
     }
   }
   if (Math.random() < 0.02) stmts.push(env.DB.prepare('DELETE FROM weekly_scores WHERE week < ?1').bind(week - 3));
+  // тапы для топа альянсов: засчитываем прирост счётчика из сохранения, но не быстрее TAPS_PER_SEC
+  const meta = await touchMeta(env, sub, p, now);
+  const st = clean.stats && typeof clean.stats === 'object' ? clean.stats : null;
+  const clientTaps = st && Number.isFinite(st.taps) && st.taps >= 0 ? Math.floor(Math.min(st.taps, 1e12)) : null;
+  if (clientTaps !== null) {
+    let add = 0;
+    if (clientTaps > meta.taps_seen) {
+      const sec = Math.max(0, (now - (meta.taps_at || now)) / 1000);
+      add = Math.min(clientTaps - meta.taps_seen, Math.floor(sec * TAPS_PER_SEC) + TAPS_BURST);
+    }
+    stmts.push(env.DB.prepare('UPDATE player_meta SET taps = taps + ?1, taps_seen = ?2, taps_at = ?3, ally_taps = ally_taps + (CASE WHEN alliance_id IS NULL THEN 0 ELSE ?1 END) WHERE sub = ?4')
+      .bind(add, clientTaps, now, sub));
+    if (add > 0 && meta.alliance_id) {
+      stmts.push(env.DB.prepare('UPDATE alliances SET taps = taps + ?1 WHERE id = ?2').bind(add, meta.alliance_id));
+      stmts.push(env.DB.prepare(`INSERT INTO alliance_weekly (week, alliance_id, taps, at) VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT (week, alliance_id) DO UPDATE SET taps = alliance_weekly.taps + ?3, at = ?4`).bind(week, meta.alliance_id, add, now));
+    }
+  }
   await env.DB.batch(stmts);
 
   const fresh = await getPlayer(env, sub);
@@ -627,7 +646,10 @@ async function handleReset(sub, env) {
 }
 
 async function handleDelete(sub, env) {
+  await leaveAlliance(env, sub);
   await env.DB.batch([
+    env.DB.prepare('DELETE FROM friends WHERE a = ?1 OR b = ?1').bind(sub),
+    env.DB.prepare('DELETE FROM player_meta WHERE sub = ?1').bind(sub),
     env.DB.prepare('DELETE FROM players WHERE sub = ?1').bind(sub),
     env.DB.prepare('DELETE FROM logins WHERE sub = ?1').bind(sub),
     env.DB.prepare('DELETE FROM planet_scores WHERE sub = ?1').bind(sub),
@@ -694,6 +716,345 @@ async function handleLeaderboard(request, url, env) {
   });
 }
 
+// ============================================================
+//  ПРОФИЛИ, ДРУЗЬЯ, АЛЬЯНСЫ
+// ============================================================
+const TAPS_PER_SEC = 15;         // быстрее человек не тапает — остальное не засчитываем
+const TAPS_BURST = 300;
+const FRIENDS_MAX = 100;
+const ALLY_MAX = 30;             // участников в альянсе
+const ONLINE_MS = 5 * 60 * 1000;
+const CODE_ABC = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';   // без похожих O/0 и I/1
+const ALLY_EMBLEMS = ['🛡️', '⚔️', '🚀', '🌟', '🔥', '🌊', '🌙', '🪐', '👑', '🐉', '🦅', '💎', '⚡', '🌀', '☄️', '🌋'];
+
+function randomCode(n = 6) {
+  const b = crypto.getRandomValues(new Uint8Array(n));
+  let s = '';
+  for (let i = 0; i < n; i++) s += CODE_ABC[b[i] % CODE_ABC.length];
+  return s;
+}
+const normFriendCode = (c) => { const s = String(c || '').toUpperCase().replace(/[\s\-_#]+/g, ''); return /^[A-Z0-9]{4,12}$/.test(s) ? s : ''; };
+
+// Запись игрока для друзей и альянсов: создаётся при первом входе. Счётчик тапов начинается с того,
+// что уже есть в сохранении (старые тапы в топ альянсов не идут). Заодно отмечает «в сети».
+async function touchMeta(env, sub, p, now = Date.now()) {
+  let m = await env.DB.prepare('SELECT * FROM player_meta WHERE sub = ?1').bind(sub).first();
+  if (m) {
+    if (now - (m.seen_at || 0) > 30000) await env.DB.prepare('UPDATE player_meta SET seen_at = ?1 WHERE sub = ?2').bind(now, sub).run();
+    return m;
+  }
+  const save = parseSave(p);
+  const t = save && save.stats && Number.isFinite(save.stats.taps) ? Math.max(0, Math.floor(save.stats.taps)) : 0;
+  for (let i = 0; i < 6 && !m; i++) {
+    try {
+      await env.DB.prepare('INSERT INTO player_meta (sub, code, taps, taps_seen, taps_at, seen_at) VALUES (?1, ?2, 0, ?3, ?4, ?4)')
+        .bind(sub, randomCode(6 + (i > 3 ? 1 : 0)), t, now).run();
+    } catch (e) {
+      if (!String((e && e.message) || e).includes('UNIQUE')) throw e;
+    }
+    m = await env.DB.prepare('SELECT * FROM player_meta WHERE sub = ?1').bind(sub).first();
+  }
+  if (!m) throw new Error('meta_failed');
+  return m;
+}
+const isOnline = (m, now = Date.now()) => !!(m && m.seen_at && now - m.seen_at < ONLINE_MS);
+const intOr0 = (x) => (Number.isFinite(x) && x > 0 ? Math.floor(Math.min(x, 1e15)) : 0);
+
+// Пройдены ли все этапы на всех планетах (нужно, чтобы создать альянс)
+function planetsProgress(save) {
+  const out = {};
+  const unlocked = save && Array.isArray(save.unlocked) ? save.unlocked : [];
+  for (const pid of PLANET_IDS) {
+    const pl = save && save.planets && save.planets[pid];
+    const open = pid === 'earth' || unlocked.includes(pid);
+    const era = open && pl ? clampInt(pl.era, 0, PLANET_MAX[pid]) : 0;
+    const best = open ? Math.max(era, clampInt(save && save.stats && save.stats.maxEra && save.stats.maxEra[pid], 0, PLANET_MAX[pid])) : 0;
+    out[pid] = { open, stage: era, best, max: PLANET_MAX[pid], prestige: clampInt(save && save.ppr && save.ppr[pid], 0, MAX_PRESTIGE) };
+  }
+  return out;
+}
+const allPlanetsMaxed = (save) => Object.values(planetsProgress(save)).every(x => x.open && x.best >= x.max);
+
+async function allianceBrief(env, id) {
+  if (!id) return null;
+  const a = await env.DB.prepare('SELECT id, name, emblem FROM alliances WHERE id = ?1').bind(id).first();
+  return a ? { id: a.id, name: a.name, emblem: a.emblem } : null;
+}
+
+// Публичный профиль игрока (по нику): статистика из сохранения, место, альянс, друзья
+async function handlePlayer(request, url, env) {
+  const nick = String(url.searchParams.get('nick') || '').trim().toLowerCase().slice(0, 32);
+  if (!nick) return fail(400, 'bad_request');
+  const p = await env.DB.prepare('SELECT * FROM players WHERE nickname_lc = ?1').bind(nick).first();
+  if (!p) return fail(404, 'not_found');
+  let viewer = null;
+  try { viewer = await authedSub(request, env); } catch (e) {}
+  const save = parseSave(p) || {};
+  const st = save.stats && typeof save.stats === 'object' ? save.stats : {};
+  const meta = await env.DB.prepare('SELECT * FROM player_meta WHERE sub = ?1').bind(p.sub).first();
+  const fc = await env.DB.prepare('SELECT COUNT(*) AS c FROM friends WHERE a = ?1').bind(p.sub).first();
+  const isFriend = viewer && viewer !== p.sub
+    ? !!(await env.DB.prepare('SELECT 1 AS x FROM friends WHERE a = ?1 AND b = ?2').bind(viewer, p.sub).first()) : false;
+  const quests = save.quests && typeof save.quests === 'object' ? save.quests : {};
+  return json({
+    nickname: p.nickname, me: viewer === p.sub, friend: isFriend, online: isOnline(meta),
+    score: p.score, rank: await rankOf(env, p), rebirths: p.rebirths, since: p.created_at,
+    planets: planetsProgress(save),
+    stats: {
+      taps: intOr0(st.taps), built: intOr0(st.built), asteroids: intOr0(st.asteroids), golden: intOr0(st.golden),
+      chests: intOr0(st.chests), playSec: intOr0(st.playSec), evolves: intOr0(st.evolves),
+      achievements: Array.isArray(quests.ach) ? quests.ach.length : 0,
+      cosmetics: Array.isArray(save.ownedCosmetics) ? save.ownedCosmetics.length : 0,
+      gems: intOr0(save.gems), allianceTaps: meta ? meta.ally_taps : 0
+    },
+    friends: fc ? fc.c : 0,
+    alliance: meta ? await allianceBrief(env, meta.alliance_id) : null
+  });
+}
+
+async function friendList(env, sub) {
+  const r = await env.DB.prepare(`SELECT p.nickname, p.score, p.rebirths, m.seen_at, m.alliance_id, a.name AS ally_name, a.emblem AS ally_emblem
+    FROM friends f JOIN players p ON p.sub = f.b LEFT JOIN player_meta m ON m.sub = f.b LEFT JOIN alliances a ON a.id = m.alliance_id
+    WHERE f.a = ?1 ORDER BY p.score DESC LIMIT ?2`).bind(sub, FRIENDS_MAX).all();
+  const now = Date.now();
+  return (r.results || []).map(x => ({
+    nickname: x.nickname, score: x.score, rebirths: x.rebirths, online: !!(x.seen_at && now - x.seen_at < ONLINE_MS),
+    alliance: x.alliance_id ? { id: x.alliance_id, name: x.ally_name, emblem: x.ally_emblem } : null
+  }));
+}
+
+// Всё для вкладки «Друзья»: свой код, друзья, свой альянс, можно ли создать альянс
+async function handleSocial(sub, env) {
+  const p = await getPlayer(env, sub);
+  if (!p) return fail(404, 'no_profile');
+  const meta = await touchMeta(env, sub, p);
+  const save = parseSave(p);
+  return json({
+    code: meta.code, friends: await friendList(env, sub), friendsMax: FRIENDS_MAX,
+    alliance: meta.alliance_id ? await allianceView(env, meta.alliance_id, sub) : null,
+    canCreate: allPlanetsMaxed(save), planets: planetsProgress(save), emblems: ALLY_EMBLEMS, allyMax: ALLY_MAX
+  });
+}
+
+async function tooManyFails(env, key, now) {
+  const f = await env.DB.prepare('SELECT COUNT(*) AS c FROM promo_fails WHERE sub = ?1 AND at > ?2').bind(key, now - 600000).first();
+  return f && f.c >= 10;
+}
+async function addFail(env, key, now) {
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO promo_fails (sub, at) VALUES (?1, ?2)').bind(key, now),
+    env.DB.prepare('DELETE FROM promo_fails WHERE at < ?1').bind(now - 3600000)
+  ]);
+}
+
+async function handleFriendAdd(request, sub, env) {
+  const p = await getPlayer(env, sub);
+  if (!p) return fail(404, 'no_profile');
+  const me = await touchMeta(env, sub, p);
+  const body = await readJson(request);
+  const code = normFriendCode(body && body.code);
+  if (!code) return fail(400, 'bad_code');
+  const now = Date.now(), key = 'f:' + sub;
+  if (await tooManyFails(env, key, now)) return fail(429, 'too_many_attempts');
+  const other = await env.DB.prepare('SELECT m.sub, p.nickname FROM player_meta m JOIN players p ON p.sub = m.sub WHERE m.code = ?1').bind(code).first();
+  if (!other) { await addFail(env, key, now); return fail(404, 'unknown_code'); }
+  if (other.sub === sub) return fail(400, 'own_code');
+  if (await env.DB.prepare('SELECT 1 AS x FROM friends WHERE a = ?1 AND b = ?2').bind(sub, other.sub).first()) return fail(409, 'already_friends');
+  const counts = await env.DB.batch([
+    env.DB.prepare('SELECT COUNT(*) AS c FROM friends WHERE a = ?1').bind(sub),
+    env.DB.prepare('SELECT COUNT(*) AS c FROM friends WHERE a = ?1').bind(other.sub)
+  ]);
+  if (counts[0].results[0].c >= FRIENDS_MAX) return fail(409, 'friends_limit');
+  if (counts[1].results[0].c >= FRIENDS_MAX) return fail(409, 'their_friends_limit');
+  await env.DB.batch([
+    env.DB.prepare('INSERT OR IGNORE INTO friends (a, b, at) VALUES (?1, ?2, ?3)').bind(sub, other.sub, now),
+    env.DB.prepare('INSERT OR IGNORE INTO friends (a, b, at) VALUES (?1, ?2, ?3)').bind(other.sub, sub, now)
+  ]);
+  return json({ ok: true, nickname: other.nickname, friends: await friendList(env, sub), code: me.code });
+}
+
+async function handleFriendRemove(request, sub, env) {
+  const body = await readJson(request);
+  const nick = String((body && body.nickname) || '').trim().toLowerCase();
+  const other = nick ? await env.DB.prepare('SELECT sub FROM players WHERE nickname_lc = ?1').bind(nick).first() : null;
+  if (!other) return fail(404, 'not_found');
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM friends WHERE a = ?1 AND b = ?2').bind(sub, other.sub),
+    env.DB.prepare('DELETE FROM friends WHERE a = ?1 AND b = ?2').bind(other.sub, sub)
+  ]);
+  return json({ ok: true, friends: await friendList(env, sub) });
+}
+
+// ---------- альянсы ----------
+function cleanAllianceName(raw) {
+  if (typeof raw !== 'string') return null;
+  const n = raw.normalize('NFKC').trim().replace(/\s+/g, ' ');
+  if (n.length < 3 || n.length > 20) return null;
+  if (!/^[\p{L}\p{N}_\-. ]+$/u.test(n)) return null;
+  return n;
+}
+async function allianceRank(env, a) {
+  const r = await env.DB.prepare('SELECT COUNT(*) AS c FROM alliances WHERE taps > ?1 OR (taps = ?1 AND id < ?2)').bind(a.taps, a.id).first();
+  return (r ? r.c : 0) + 1;
+}
+async function allianceView(env, id, viewer) {
+  const a = await env.DB.prepare('SELECT * FROM alliances WHERE id = ?1').bind(id).first();
+  if (!a) return null;
+  const week = weekId(Date.now());
+  const [mem, wk] = await env.DB.batch([
+    env.DB.prepare(`SELECT m.sub, p.nickname, p.score, m.ally_taps, m.seen_at, m.ally_at FROM player_meta m JOIN players p ON p.sub = m.sub
+      WHERE m.alliance_id = ?1 ORDER BY m.ally_taps DESC, m.ally_at ASC`).bind(id),
+    env.DB.prepare('SELECT taps FROM alliance_weekly WHERE week = ?1 AND alliance_id = ?2').bind(week, id)
+  ]);
+  const now = Date.now();
+  const members = (mem.results || []).map(x => ({ nickname: x.nickname, score: x.score, taps: x.ally_taps, online: !!(x.seen_at && now - x.seen_at < ONLINE_MS), leader: x.sub === a.leader, me: x.sub === viewer }));
+  const isMember = (mem.results || []).some(x => x.sub === viewer);
+  const leader = (mem.results || []).find(x => x.sub === a.leader);
+  return {
+    id: a.id, name: a.name, emblem: a.emblem, open: !!a.open, taps: a.taps, weekTaps: (wk.results[0] && wk.results[0].taps) || 0,
+    rank: await allianceRank(env, a), created: a.created_at, leader: leader ? leader.nickname : null,
+    members, size: members.length, max: ALLY_MAX, isMember, isLeader: viewer === a.leader,
+    code: isMember ? a.code : null
+  };
+}
+
+async function handleAlliances(request, url, env) {
+  const period = url.searchParams.get('period') === 'week' ? 'week' : 'all';
+  const week = weekId(Date.now());
+  let viewer = null;
+  try { viewer = await authedSub(request, env); } catch (e) {}
+  const rows = period === 'week'
+    ? await env.DB.prepare(`SELECT a.id, a.name, a.emblem, a.open, w.taps, (SELECT COUNT(*) FROM player_meta m WHERE m.alliance_id = a.id) AS members
+        FROM alliance_weekly w JOIN alliances a ON a.id = w.alliance_id WHERE w.week = ?1 AND w.taps > 0 ORDER BY w.taps DESC, w.at ASC LIMIT 50`).bind(week).all()
+    : await env.DB.prepare(`SELECT a.id, a.name, a.emblem, a.open, a.taps, (SELECT COUNT(*) FROM player_meta m WHERE m.alliance_id = a.id) AS members
+        FROM alliances a ORDER BY a.taps DESC, a.id ASC LIMIT 50`).all();
+  const total = await env.DB.prepare('SELECT COUNT(*) AS c FROM alliances').first();
+  let mine = null;
+  if (viewer) {
+    const m = await env.DB.prepare('SELECT alliance_id FROM player_meta WHERE sub = ?1').bind(viewer).first();
+    if (m && m.alliance_id) mine = m.alliance_id;
+  }
+  return json({
+    period, mine, total: total ? total.c : 0, max: ALLY_MAX,
+    alliances: (rows.results || []).map(x => ({ id: x.id, name: x.name, emblem: x.emblem, open: !!x.open, taps: x.taps, members: x.members })),
+    week: { id: week, endsAt: weekEnd(week) }
+  });
+}
+
+async function handleAlliance(request, url, env) {
+  const id = parseInt(url.searchParams.get('id') || '0', 10);
+  if (!(id > 0)) return fail(400, 'bad_request');
+  let viewer = null;
+  try { viewer = await authedSub(request, env); } catch (e) {}
+  const v = await allianceView(env, id, viewer);
+  return v ? json(v) : fail(404, 'not_found');
+}
+
+async function handleAllianceCreate(request, sub, env) {
+  const p = await getPlayer(env, sub);
+  if (!p) return fail(404, 'no_profile');
+  const meta = await touchMeta(env, sub, p);
+  if (meta.alliance_id) return fail(409, 'already_in_alliance');
+  if (!allPlanetsMaxed(parseSave(p))) return fail(403, 'need_all_planets');
+  const body = await readJson(request);
+  const name = cleanAllianceName(body && body.name);
+  if (!name) return fail(400, 'invalid_name');
+  const emblem = ALLY_EMBLEMS.includes(body && body.emblem) ? body.emblem : ALLY_EMBLEMS[0];
+  const open = body && body.open === false ? 0 : 1;
+  if (await env.DB.prepare('SELECT 1 AS x FROM alliances WHERE name_lc = ?1').bind(name.toLowerCase()).first()) return fail(409, 'name_taken');
+  const now = Date.now();
+  let id = null;
+  for (let i = 0; i < 6 && !id; i++) {
+    try {
+      const code = randomCode(7);
+      await env.DB.prepare('INSERT INTO alliances (name, name_lc, emblem, code, leader, open, taps, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)')
+        .bind(name, name.toLowerCase(), emblem, code, sub, open, now).run();
+      const r = await env.DB.prepare('SELECT id FROM alliances WHERE code = ?1').bind(code).first();
+      id = r && r.id;
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (msg.includes('name_lc')) return fail(409, 'name_taken');
+      if (!msg.includes('UNIQUE')) throw e;
+    }
+  }
+  if (!id) return fail(500, 'server_error');
+  await env.DB.prepare('UPDATE player_meta SET alliance_id = ?1, ally_taps = 0, ally_at = ?2 WHERE sub = ?3').bind(id, now, sub).run();
+  return json({ ok: true, alliance: await allianceView(env, id, sub) });
+}
+
+async function handleAllianceJoin(request, sub, env) {
+  const p = await getPlayer(env, sub);
+  if (!p) return fail(404, 'no_profile');
+  const meta = await touchMeta(env, sub, p);
+  if (meta.alliance_id) return fail(409, 'already_in_alliance');
+  const body = await readJson(request);
+  const now = Date.now(), key = 'a:' + sub;
+  let a = null;
+  if (body && body.code !== undefined) {
+    const code = normFriendCode(body.code);
+    if (!code) return fail(400, 'bad_code');
+    if (await tooManyFails(env, key, now)) return fail(429, 'too_many_attempts');
+    a = await env.DB.prepare('SELECT * FROM alliances WHERE code = ?1').bind(code).first();
+    if (!a) { await addFail(env, key, now); return fail(404, 'unknown_code'); }
+  } else {
+    const id = parseInt(body && body.id, 10);
+    a = id > 0 ? await env.DB.prepare('SELECT * FROM alliances WHERE id = ?1').bind(id).first() : null;
+    if (!a) return fail(404, 'not_found');
+    if (!a.open) return fail(403, 'closed');
+  }
+  // место проверяем и занимаем одним запросом — двое не займут последнее место одновременно
+  const r = await env.DB.prepare(`UPDATE player_meta SET alliance_id = ?1, ally_taps = 0, ally_at = ?2 WHERE sub = ?3 AND alliance_id IS NULL
+    AND (SELECT COUNT(*) FROM player_meta WHERE alliance_id = ?1) < ?4`).bind(a.id, now, sub, ALLY_MAX).run();
+  if (!r.meta || !r.meta.changes) return fail(409, 'alliance_full');
+  return json({ ok: true, alliance: await allianceView(env, a.id, sub) });
+}
+
+// Выход из альянса: лидерство переходит к самому полезному участнику, пустой альянс удаляется
+async function leaveAlliance(env, sub) {
+  const meta = await env.DB.prepare('SELECT alliance_id FROM player_meta WHERE sub = ?1').bind(sub).first();
+  if (!meta || !meta.alliance_id) return false;
+  const id = meta.alliance_id;
+  await env.DB.prepare('UPDATE player_meta SET alliance_id = NULL, ally_taps = 0, ally_at = 0 WHERE sub = ?1').bind(sub).run();
+  const a = await env.DB.prepare('SELECT leader FROM alliances WHERE id = ?1').bind(id).first();
+  if (!a) return true;
+  const next = await env.DB.prepare('SELECT sub FROM player_meta WHERE alliance_id = ?1 ORDER BY ally_taps DESC, ally_at ASC LIMIT 1').bind(id).first();
+  if (!next) {
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM alliances WHERE id = ?1').bind(id),
+      env.DB.prepare('DELETE FROM alliance_weekly WHERE alliance_id = ?1').bind(id)
+    ]);
+  } else if (a.leader === sub) {
+    await env.DB.prepare('UPDATE alliances SET leader = ?1 WHERE id = ?2').bind(next.sub, id).run();
+  }
+  return true;
+}
+async function handleAllianceLeave(sub, env) {
+  if (!(await leaveAlliance(env, sub))) return fail(409, 'not_in_alliance');
+  return json({ ok: true });
+}
+async function handleAllianceKick(request, sub, env) {
+  const meta = await env.DB.prepare('SELECT alliance_id FROM player_meta WHERE sub = ?1').bind(sub).first();
+  const a = meta && meta.alliance_id ? await env.DB.prepare('SELECT * FROM alliances WHERE id = ?1').bind(meta.alliance_id).first() : null;
+  if (!a || a.leader !== sub) return fail(403, 'not_leader');
+  const body = await readJson(request);
+  const nick = String((body && body.nickname) || '').trim().toLowerCase();
+  const t = nick ? await env.DB.prepare('SELECT p.sub FROM players p JOIN player_meta m ON m.sub = p.sub WHERE p.nickname_lc = ?1 AND m.alliance_id = ?2').bind(nick, a.id).first() : null;
+  if (!t || t.sub === sub) return fail(404, 'not_found');
+  await env.DB.prepare('UPDATE player_meta SET alliance_id = NULL, ally_taps = 0, ally_at = 0 WHERE sub = ?1').bind(t.sub).run();
+  return json({ ok: true, alliance: await allianceView(env, a.id, sub) });
+}
+async function handleAllianceSettings(request, sub, env) {
+  const meta = await env.DB.prepare('SELECT alliance_id FROM player_meta WHERE sub = ?1').bind(sub).first();
+  const a = meta && meta.alliance_id ? await env.DB.prepare('SELECT * FROM alliances WHERE id = ?1').bind(meta.alliance_id).first() : null;
+  if (!a || a.leader !== sub) return fail(403, 'not_leader');
+  const body = await readJson(request);
+  const emblem = ALLY_EMBLEMS.includes(body && body.emblem) ? body.emblem : a.emblem;
+  const open = body && typeof body.open === 'boolean' ? (body.open ? 1 : 0) : a.open;
+  const code = body && body.newCode ? randomCode(7) : a.code;
+  await env.DB.prepare('UPDATE alliances SET emblem = ?1, open = ?2, code = ?3 WHERE id = ?4').bind(emblem, open, code, a.id).run();
+  return json({ ok: true, alliance: await allianceView(env, a.id, sub) });
+}
+
 // Новые версии сами спрашивают, не вышло ли обновление
 async function handleClient(request, env) {
   const c = clientInfo(request);
@@ -703,7 +1064,8 @@ async function handleClient(request, env) {
   return json({ latest, update, required: update && forceUpdate(env), site: env.SITE_VERSION || null });
 }
 
-const PROTECTED = ['/api/me', '/api/profile', '/api/sync', '/api/reset', '/api/account', '/api/redeem'];
+const PROTECTED = ['/api/me', '/api/profile', '/api/sync', '/api/reset', '/api/account', '/api/redeem', '/api/social',
+  '/api/friends', '/api/friends/remove', '/api/alliance/create', '/api/alliance/join', '/api/alliance/leave', '/api/alliance/kick', '/api/alliance/settings'];
 
 // ---------- переезд на другой сервер ----------
 // MOVED_TO = 'https://новый-адрес' — игра переехала (например, на сервер в России, где Cloudflare ограничен).
@@ -755,6 +1117,9 @@ export default {
       if (path === '/api/health' && m === 'GET') return json({ terra: true, configured: isConfigured(env) });
       if (path === '/api/leaderboard' && m === 'GET') return await handleLeaderboard(request, url, env);
       if (path === '/api/client' && m === 'GET') return await handleClient(request, env);
+      if (path === '/api/player' && m === 'GET') return await handlePlayer(request, url, env);
+      if (path === '/api/alliances' && m === 'GET') return await handleAlliances(request, url, env);
+      if (path === '/api/alliance' && m === 'GET') return await handleAlliance(request, url, env);
       // устаревшие APK: новые версии получают 426 и показывают окно обновления,
       // старые (не знают 426) — 401: их выкидывает на экран входа, а вход открывает страницу «Обновите игру»
       if (path === '/api/auth/exchange' || PROTECTED.includes(path)) {
@@ -774,6 +1139,14 @@ export default {
         if (path === '/api/reset' && m === 'POST') return await handleReset(sub, env);
         if (path === '/api/account' && m === 'DELETE') return await handleDelete(sub, env);
         if (path === '/api/redeem' && m === 'POST') return await handleRedeem(request, sub, env);
+        if (path === '/api/social' && m === 'GET') return await handleSocial(sub, env);
+        if (path === '/api/friends' && m === 'POST') return await handleFriendAdd(request, sub, env);
+        if (path === '/api/friends/remove' && m === 'POST') return await handleFriendRemove(request, sub, env);
+        if (path === '/api/alliance/create' && m === 'POST') return await handleAllianceCreate(request, sub, env);
+        if (path === '/api/alliance/join' && m === 'POST') return await handleAllianceJoin(request, sub, env);
+        if (path === '/api/alliance/leave' && m === 'POST') return await handleAllianceLeave(sub, env);
+        if (path === '/api/alliance/kick' && m === 'POST') return await handleAllianceKick(request, sub, env);
+        if (path === '/api/alliance/settings' && m === 'POST') return await handleAllianceSettings(request, sub, env);
       }
       return fail(404, 'not_found');
     } catch (e) {

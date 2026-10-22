@@ -1,32 +1,113 @@
-// Terra 3D — звуки. Всё синтезируется Web Audio на лету: никаких файлов, работает офлайн и в APK.
+// Terra 3D — звуки и фоновая музыка. Всё синтезируется Web Audio на лету: никаких файлов, работает офлайн и в APK.
+// Музыка — спокойный эмбиент: мягкие аккорды, бас и редкие «капли» с эхом; каждый раз звучит немного по-новому.
 'use strict';
 
 const Sound = (() => {
   const KEY = 'terra_sound';
-  let enabled = true;
-  try { enabled = localStorage.getItem(KEY) !== 'off'; } catch (e) {}
-  let ctx = null, master = null, noiseBuf = null;
+  const store = (k, v) => { try { localStorage.setItem(k, String(v)); } catch (e) {} };
+  const load = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } };
+  let enabled = load(KEY, 'on') !== 'off';
+  let musicOn = load('terra_music', 'on') !== 'off';
+  let sfxVol = Math.min(1, Math.max(0, parseFloat(load('terra_sfx_vol', '0.8')) || 0));
+  let musicVol = Math.min(1, Math.max(0, parseFloat(load('terra_music_vol', '0.5')) || 0));
+  let ctx = null, master = null, musicBus = null, noiseBuf = null, unlocked = false, paused = false;
   const lastAt = {};
 
-  function ensure() {
-    if (!enabled) return null;
+  function context() {
     try {
       if (!ctx) {
         const AC = window.AudioContext || window.webkitAudioContext;
         if (!AC) return null;
         ctx = new AC();
-        master = ctx.createGain();
-        master.gain.value = 0.55;
         const comp = ctx.createDynamicsCompressor();
-        master.connect(comp); comp.connect(ctx.destination);
+        comp.connect(ctx.destination);
+        master = ctx.createGain();
+        master.gain.value = 0.55 * sfxVol;
+        master.connect(comp);
+        musicBus = ctx.createGain();
+        musicBus.gain.value = 0;
+        musicBus.connect(comp);
       }
-      if (ctx.state === 'suspended') ctx.resume();
+      if (ctx.state === 'suspended' && !paused) ctx.resume();
       return ctx;
     } catch (e) { return null; }
   }
-  // Браузеры разрешают звук только после касания экрана
+  function ensure() { return enabled && unlocked ? context() : null; }
+  // Браузеры разрешают звук только после касания экрана — тогда же стартует музыка
   ['pointerdown', 'keydown', 'touchstart'].forEach(ev =>
-    document.addEventListener(ev, () => { if (enabled) ensure(); }, { passive: true, capture: true }));
+    document.addEventListener(ev, () => { unlocked = true; if (enabled || musicOn) context(); if (musicOn) Music.start(); }, { passive: true, capture: true }));
+  document.addEventListener('visibilitychange', () => { if (document.hidden) suspend(); else resume(); });
+  function suspend() { paused = true; Music.fade(0); try { if (ctx && ctx.state === 'running') setTimeout(() => { if (paused) ctx.suspend(); }, 400); } catch (e) {} }
+  function resume() { paused = false; if (!unlocked) return; try { if (ctx) ctx.resume(); } catch (e) {} if (musicOn) Music.start(); }
+
+  // ---------- фоновая музыка ----------
+  const Music = (() => {
+    const C3 = 130.81;
+    const hz = (semi) => C3 * Math.pow(2, semi / 12);
+    // Cmaj7 → Am7 → Fmaj7 → Dm9 → Cmaj7/E → Fmaj7 → Am7 → G6 — спокойно и без резких смен
+    const CHORDS = [[0, 4, 7, 11], [-3, 0, 4, 7], [-7, -3, 0, 4], [2, 5, 9, 12, 16], [4, 7, 11, 12], [-7, -3, 0, 4], [-3, 0, 4, 7], [-5, -1, 2, 4]];
+    const PENTA = [12, 14, 16, 19, 21, 24, 26, 28, 31];
+    const CHORD_SEC = 9;
+    let timer = null, nextChord = 0, nextPluck = 0, idx = 0, delayIn = null, running = false;
+    function bus() {
+      if (delayIn) return;
+      const c = ctx;
+      delayIn = c.createGain(); delayIn.gain.value = 1;
+      const d = c.createDelay(2); d.delayTime.value = 0.42;
+      const fb = c.createGain(); fb.gain.value = 0.38;
+      const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 2400;
+      delayIn.connect(d); d.connect(lp); lp.connect(fb); fb.connect(d);
+      lp.connect(musicBus);
+    }
+    function voice(freq, t0, dur, peak, type, cutoff, detune = 0) {
+      const c = ctx, o = c.createOscillator(), g = c.createGain(), f = c.createBiquadFilter();
+      o.type = type; o.frequency.value = freq; o.detune.value = detune;
+      f.type = 'lowpass'; f.frequency.value = cutoff;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.linearRampToValueAtTime(peak, t0 + 3);
+      g.gain.setValueAtTime(peak, t0 + dur - 3.5);
+      g.gain.linearRampToValueAtTime(0.0001, t0 + dur + 1);
+      o.connect(f); f.connect(g); g.connect(musicBus);
+      o.start(t0); o.stop(t0 + dur + 1.2);
+    }
+    function chord(t0) {
+      const ch = CHORDS[idx % CHORDS.length]; idx++;
+      const dur = CHORD_SEC + 3;
+      ch.forEach((s, i) => {
+        voice(hz(s), t0, dur, 0.032, 'sine', 1400, (i % 2 ? 6 : -6));
+        voice(hz(s + 12), t0 + 0.3, dur, 0.012, 'triangle', 1800, (i % 2 ? -8 : 8));
+      });
+      voice(hz(ch[0] - 12), t0, dur, 0.05, 'sine', 400);
+    }
+    function pluck(t0) {
+      const c = ctx, semi = PENTA[Math.floor(Math.random() * PENTA.length)];
+      const o = c.createOscillator(), g = c.createGain();
+      o.type = Math.random() < 0.5 ? 'triangle' : 'sine'; o.frequency.value = hz(semi);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.03, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.6);
+      o.connect(g); g.connect(musicBus); g.connect(delayIn);
+      o.start(t0); o.stop(t0 + 2.8);
+    }
+    function tick() {
+      if (!running || paused || !ctx || ctx.state !== 'running') return;
+      const now = ctx.currentTime;
+      if (now + 0.6 > nextChord) { chord(Math.max(now + 0.05, nextChord)); nextChord = Math.max(now, nextChord) + CHORD_SEC; }
+      if (now + 0.4 > nextPluck) { pluck(Math.max(now + 0.05, nextPluck)); nextPluck = Math.max(now, nextPluck) + 1.3 + Math.random() * 2.6; }
+    }
+    return {
+      start() {
+        if (!musicOn || !unlocked || paused) return;
+        const c = context(); if (!c) return;
+        bus();
+        if (!running) { running = true; nextChord = c.currentTime + 0.1; nextPluck = c.currentTime + 2; timer = setInterval(tick, 250); tick(); }
+        this.fade(0.22 * musicVol);
+      },
+      stop() { running = false; clearInterval(timer); timer = null; this.fade(0); },
+      fade(v) { if (ctx && musicBus) { const t = ctx.currentTime; musicBus.gain.cancelScheduledValues(t); musicBus.gain.setTargetAtTime(v, t, v > 0 ? 1.2 : 0.25); } },
+      get running() { return running; }
+    };
+  })();
 
   function throttle(name, ms) {
     const now = performance.now();
@@ -74,12 +155,19 @@ const Sound = (() => {
 
   return {
     get enabled() { return enabled; },
+    get music() { return musicOn; },
+    get sfxVolume() { return sfxVol; },
+    get musicVolume() { return musicVol; },
     toggle() {
       enabled = !enabled;
-      try { localStorage.setItem(KEY, enabled ? 'on' : 'off'); } catch (e) {}
+      store(KEY, enabled ? 'on' : 'off');
       if (enabled) { ensure(); this.ui(); }
       return enabled;
     },
+    setMusic(on) { musicOn = !!on; store('terra_music', on ? 'on' : 'off'); if (on) Music.start(); else Music.stop(); },
+    setSfxVolume(v) { sfxVol = Math.min(1, Math.max(0, v)); store('terra_sfx_vol', sfxVol.toFixed(2)); if (master) master.gain.value = 0.55 * sfxVol; },
+    setMusicVolume(v) { musicVol = Math.min(1, Math.max(0, v)); store('terra_music_vol', musicVol.toFixed(2)); if (musicOn && Music.running) Music.fade(0.22 * musicVol); },
+    suspend, resume,
     // тап по планете
     tap(crit) {
       if (!throttle('tap', 45)) return;

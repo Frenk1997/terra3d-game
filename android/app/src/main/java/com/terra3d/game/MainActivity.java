@@ -176,7 +176,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (webView != null) webView.onResume();
+        if (webView != null) {
+            webView.onResume();
+            webView.evaluateJavascript("window.__terraResume && window.__terraResume()", null);
+        }
     }
 
     @Override
