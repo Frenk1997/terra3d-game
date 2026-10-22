@@ -25,6 +25,8 @@ const SAVE_KEYS = ['v', 'planet', 'unlocked', 'planets', 'gems', 'sapphires', 'p
 const MAX_REBIRTHS = 100000;
 const SCORE_PER_MIN = 150;       // на сколько очков рейтинг может вырасти за минуту (престиж = 100 очков)
 const FIRST_SYNC_ALLOWANCE = 600; // стартовый запас для нового аккаунта (перенос старого прогресса)
+const MAX_SCORE_JUMP = 5000;      // больше этого за одну синхронизацию счёт не растёт
+const SCORE_BURST = 120;          // один престиж (+100) всегда засчитывается сразу
 const APP_SCHEME = 'terra3d';
 const DEFAULT_APP_PACKAGE = 'com.terra3d.game';
 
@@ -335,7 +337,10 @@ async function latestRelease(env) {
           build,
           version: String(j.version || '1.0.' + build).slice(0, 20),
           notes: String(j.notes || '').slice(0, 300),
-          url: `https://github.com/${repo}/releases/latest/download/terra3d.apk`
+          // ссылка на конкретную версию: «latest» браузер может запомнить и снова скачать старый APK
+          url: /^\d+\.\d+\.\d+$/.test(String(j.version || ''))
+            ? `https://github.com/${repo}/releases/download/v${j.version}/terra3d.apk`
+            : `https://github.com/${repo}/releases/latest/download/terra3d.apk`
         };
       }
     }
@@ -568,8 +573,10 @@ async function handleSync(request, sub, env) {
   const now = Date.now();
   let newScore = p.score;
   if (claimed > p.score) {
-    const elapsedMin = Math.max(0, (now - p.updated_at) / 60000);
-    let allowed = Math.floor(SCORE_PER_MIN * elapsedMin) + 1;
+    // время считаем от последнего роста счёта, а не от последней синхронизации: иначе частые
+    // синхронизации (каждые 30 с) душили бы честный престиж (+100) и рейтинг отставал на минуты
+    const elapsedMin = Math.max(0, (now - (p.score_updated_at || p.updated_at)) / 60000);
+    let allowed = Math.min(MAX_SCORE_JUMP, Math.floor(SCORE_PER_MIN * elapsedMin) + SCORE_BURST);
     if (p.score === 0) allowed = Math.max(allowed, FIRST_SYNC_ALLOWANCE);
     newScore = Math.min(claimed, p.score + allowed);
   }
@@ -689,7 +696,8 @@ async function handleClient(request, env) {
   const c = clientInfo(request);
   const latest = await latestRelease(env);
   const update = !!(latest && c.app && c.build > 0 && c.build < latest.build);
-  return json({ latest, update, required: update && forceUpdate(env) });
+  // site — версия веб-игры на сервере: открытая вкладка со старым кодом сама перезагрузится
+  return json({ latest, update, required: update && forceUpdate(env), site: env.SITE_VERSION || null });
 }
 
 const PROTECTED = ['/api/me', '/api/profile', '/api/sync', '/api/reset', '/api/account', '/api/redeem'];

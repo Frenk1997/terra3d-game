@@ -59,11 +59,18 @@ cp -R ../web public
 if [ -n "${APK_URL:-}" ]; then
   sed -i.bak "s#APK_URL: ''#APK_URL: '${APK_URL}'#" public/config.js && rm -f public/config.js.bak
 fi
+# Версия сайта: открытая вкладка со старым кодом увидит, что вышло новое, и перезагрузится сама.
+# Тот же номер — в адресах скриптов, чтобы браузер не взял старые файлы из кэша.
+SITE_VERSION="$(printf '%s' "${GITHUB_SHA:-$(date +%s)}" | cut -c1-12)"
+printf '\nwindow.TERRA_SITE_VERSION = %s;\n' "'${SITE_VERSION}'" >> public/config.js
+sed -i.bak -E "s#(src=\"(config|js/[a-z]+)\.js)\"#\1?v=${SITE_VERSION}\"#g" public/index.html && rm -f public/index.html.bak
+printf '/*\n  Cache-Control: no-cache\n' > public/_headers
+echo "Версия сайта: ${SITE_VERSION}"
 
 echo "== 4/4 Выкладка"
 # GITHUB_REPO — откуда сервер узнаёт номер последней версии APK (для окна «Вышло обновление»)
 REPO="${GITHUB_REPO:-${GITHUB_REPOSITORY:-}}"
-VARS=(--var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}")
+VARS=(--var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}" --var "SITE_VERSION:${SITE_VERSION}")
 if [ -n "$REPO" ]; then VARS+=(--var "GITHUB_REPO:${REPO}"); fi
 # FORCE_UPDATE=0 — пускать в игру устаревшие APK (по умолчанию играть можно только в последней версии)
 if [ -n "${FORCE_UPDATE:-}" ]; then VARS+=(--var "FORCE_UPDATE:${FORCE_UPDATE}"); fi

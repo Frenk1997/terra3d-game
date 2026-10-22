@@ -377,7 +377,7 @@ function progressOf(s) {
   return (s.rebirths | 0) * 100 + (s.era | 0);
 }
 function canSync() { return CONFIGURED && !!session && playing && !demo && !!myProfile && !clientOutdated; }
-function queueSync(delay = 1500) { if (!canSync()) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow(), delay); }
+function queueSync(delay = 1500) { if (!canSync()) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => { syncTimer = null; syncNow(); }, delay); }
 async function syncNow(keepalive = false) {
   if (!canSync() || syncing) return;
   syncing = true; setSync('sync');
@@ -398,10 +398,16 @@ async function syncNow(keepalive = false) {
     const r = await api('/api/sync', { method: 'POST', body: { save: state }, keepalive });
     if (r && myProfile) { myProfile.score = r.score; myProfile.rank = r.rank; myProfile.rebirths = r.rebirths; myProfile.era = r.era; }
     setSync('ok'); renderRankPill();
+    // топ открыт — сразу подтягиваем свежие места (без кнопки ⟳)
+    if (!keepalive && ui.tab === 'top' && !document.hidden) setTimeout(() => fetchLeaderboard(), 150);
   } catch (e) {
     if (e.status === 401) { syncing = false; forceLogout('Сессия истекла. Войдите снова.'); return; }
     if (e.status === 404 && e.message === 'no_profile') { syncing = false; logout({ ask: false, skipSync: true, message: 'Аккаунт не найден. Войдите снова.' }); return; }
-    if (e.status === 409 && e.message === 'client_outdated') { clientOutdated = true; showToast('Вышла новая версия игры — обновите приложение', 6000); checkUpdate(true); }
+    if (e.status === 409 && e.message === 'client_outdated') {
+      clientOutdated = true;
+      if (!IS_APP) { reloadForNewVersion(); return; }   // сайт: просто берём новую версию игры
+      showToast('Вышла новая версия игры — обновите приложение', 6000); checkUpdate(true);
+    }
     setSync('off');
   } finally { syncing = false; }
 }
@@ -752,15 +758,33 @@ async function submitCode() {
 // ---------- Вышло обновление (только в APK) ----------
 // Сервер знает номер последней сборки (version.json из релиза на GitHub) и сравнивает его с нашим.
 let updateInfo = null, updateShownBuild = 0, updateRetry = null, forcedUpdate = false;
+const SITE_VERSION = (typeof window.TERRA_SITE_VERSION === 'string') ? window.TERRA_SITE_VERSION : '';
+let lastUpdateCheck = 0;
 async function checkUpdate(force = false) {
-  if (!IS_APP || !MY_BUILD || !CONFIGURED) return;
+  if (!CONFIGURED) return;
+  if (!IS_APP && !SITE_VERSION) return;          // сайт без отметки версии (локальная сборка) — проверять нечего
+  if (IS_APP && !MY_BUILD) return;
+  lastUpdateCheck = Date.now();
   try {
     const r = await api('/api/client');
+    if (!IS_APP) {
+      // на сервере уже другая версия сайта — перезагружаемся, чтобы не играть на старом коде
+      if (r && r.site && r.site !== SITE_VERSION) reloadForNewVersion();
+      return;
+    }
     if (r && r.update && r.latest && r.latest.build > MY_BUILD) {
       updateInfo = r.latest;
       if (r.required) showForcedUpdate(r.latest); else maybeShowUpdate(force);
     }
   } catch (e) {}
+}
+let reloading = false;
+function reloadForNewVersion() {
+  if (reloading) return;
+  reloading = true;
+  if (playing) saveLocal();
+  showToast('🔄 Игра обновилась — загружаем новую версию…', 4000);
+  setTimeout(() => location.reload(), 1500);
 }
 // Версия устарела, сервер больше не пускает: играть нельзя, только обновиться
 function showForcedUpdate(latest) {
@@ -804,7 +828,13 @@ function downloadUpdate() {
   try { window.TerraNative.openExternal(url); } catch (e) { location.href = url; }
   showToast('Скачивается обновление — откройте файл и установите поверх игры', 6000);
 }
-setInterval(() => { if (playing && !document.hidden) checkUpdate(); }, 30 * 60 * 1000);
+setInterval(() => { if (playing && !document.hidden) checkUpdate(); }, 10 * 60 * 1000);
+// вернулись в игру (вкладка/приложение снова на экране) — проверить версию и освежить топ
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !playing) return;
+  if (Date.now() - lastUpdateCheck > 60000) checkUpdate();
+  if (ui.tab === 'top') fetchLeaderboard();
+});
 
 // ---------- Диалоги ----------
 function closeAllOverlays() {
@@ -888,20 +918,61 @@ async function deleteAccount() {
 
 // ---------- Рейтинг ----------
 // Доски: общий и по планетам; периоды: неделя и всё время
-let lbData = null, lbLoading = false, lbError = false, lbVer = 0;
+// Топ «живой»: обновляется сам каждые 10 с, сразу после каждой синхронизации и при возврате в игру,
+// а своя строка между запросами считается по локальному прогрессу — без кнопки ⟳.
+let lbData = null, lbLoading = false, lbError = false, lbVer = 0, lbFetching = false, lbAt = 0;
+const lbPrevRanks = new Map();   // «доска:ник» → место при прошлом показе (для подсветки, кто поднялся)
 async function fetchLeaderboard() {
-  if (!CONFIGURED || demo || !session) return;
+  if (!CONFIGURED || demo || !session || lbFetching) return;
   const key = ui.lbBoard + ':' + ui.lbPeriod;
-  lbLoading = true; lbVer++;
-  if (ui.tab === 'top') renderPanel();
+  lbFetching = true; lbLoading = true;
+  if (!lbData) { lbVer++; if (ui.tab === 'top') renderPanel(); }   // скелетон — только при первой загрузке
   try {
     const d = await api(`/api/leaderboard?limit=50&board=${ui.lbBoard}&period=${ui.lbPeriod}`);
-    if (key === ui.lbBoard + ':' + ui.lbPeriod) { lbData = d; lbError = false; }
+    if (key === ui.lbBoard + ':' + ui.lbPeriod) { lbData = d; lbError = false; lbAt = Date.now(); }
+    // общий топ знает актуальное место — обновим и плашку 🏆 на главном экране
+    if (d && d.board === 'all' && d.period === 'all' && d.me && d.me.rank && myProfile) { myProfile.rank = d.me.rank; renderRankPill(); }
   } catch (e) { if (key === ui.lbBoard + ':' + ui.lbPeriod) lbError = true; }
-  lbLoading = false; lbVer++;
+  lbFetching = false; lbLoading = false; lbVer++;
   if (ui.tab === 'top') renderPanel();
+  // пока грузили, переключили доску — догружаем нужную
+  if (key !== ui.lbBoard + ':' + ui.lbPeriod) fetchLeaderboard();
 }
-setInterval(() => { if (playing && ui.tab === 'top' && !document.hidden) fetchLeaderboard(); }, 30000);
+setInterval(() => { if (playing && ui.tab === 'top' && !document.hidden) fetchLeaderboard(); }, 10000);
+
+// Свой результат прямо сейчас (по локальному прогрессу) — такой же, какой посчитает сервер
+const LB_PRESTIGE = 10000000, LB_STAGE = 100000;
+function myLocalEntry(board, period) {
+  if (!myProfile) return null;
+  if (board === 'all') {
+    if (period === 'week') return null;   // недельный прирост знает только сервер
+    return { score: progressOf(state), rebirths: totalPrestige(), era: ps('earth').era };
+  }
+  if (!isUnlocked(board)) return null;
+  const b = Math.min(planetBuildings(board), LB_STAGE - 1), pr = prestigeCount(board), era = ps(board).era;
+  return { score: pr * LB_PRESTIGE + era * LB_STAGE + b, prestige: pr, era, buildings: b };
+}
+// Ответ сервера + свой свежий результат: обновляем свою строку, пересортировываем, пересчитываем своё место
+function mergedLeaderboard(d, board, period) {
+  const nick = myProfile ? myProfile.nickname : '', lc = nick.toLowerCase();
+  let players = d.players.map(p => ({ ...p }));
+  let me = d.me ? { ...d.me } : null;
+  const local = myLocalEntry(board, period);
+  if (local && local.score > 0) {
+    const i = players.findIndex(p => p.nickname.toLowerCase() === lc);
+    const cur = i >= 0 ? players[i] : null;
+    if (!cur || local.score > cur.score) {
+      const row = { ...(cur || {}), nickname: nick, ...local, score: Math.max(local.score, cur ? cur.score : 0) };
+      if (i >= 0) players[i] = row; else players.push(row);
+      players.sort((a, b) => b.score - a.score);
+      players = players.slice(0, 50);
+      const pos = players.findIndex(p => p.nickname.toLowerCase() === lc);
+      me = { ...(me || {}), ...local, score: row.score };
+      if (pos >= 0) me.rank = pos + 1;
+    }
+  }
+  return { players, me };
+}
 function setLeaderboard(board, period) {
   if (board === ui.lbBoard && period === ui.lbPeriod) return;
   ui.lbBoard = board; ui.lbPeriod = period;
@@ -925,12 +996,13 @@ function renderLeaderboardHtml() {
     return `<div class="empty"><div class="empty-ico">🏆</div><div class="empty-title">Рейтинг недоступен</div><div class="empty-text">Войдите через Google, чтобы соревноваться с другими игроками.</div></div>`;
   }
   const board = ui.lbBoard, period = ui.lbPeriod, me = myProfile;
-  const d = lbData && lbData.board === board && lbData.period === period ? lbData : null;
+  const raw = lbData && lbData.board === board && lbData.period === period ? lbData : null;
+  const d = raw ? { ...raw, ...mergedLeaderboard(raw, board, period) } : null;
   const boardName = board === 'all' ? 'Общий топ' : `Топ: ${PL(board).name}`;
   const note = board === 'all'
     ? (period === 'week' ? 'Очки, набранные с понедельника' : 'Престиж — 100 очков, эпоха или этап — 1')
     : (period === 'week' ? 'Лучший результат на этой неделе' : 'Престижи планеты, затем этап и постройки');
-  let html = `<div class="lb-head"><div><div class="lb-title">🏆 ${boardName}</div><div class="lb-sub">${d ? 'Игроков: ' + fmt(d.total) + ' · ' : ''}${note}</div></div><button class="btn-icon" data-action="lbrefresh" type="button">⟳</button></div>
+  let html = `<div class="lb-head"><div><div class="lb-title">🏆 ${boardName} <span class="lb-live ${lbFetching ? 'busy' : ''}" title="Топ обновляется сам">● live</span></div><div class="lb-sub">${d ? 'Игроков: ' + fmt(d.total) + ' · ' : ''}${note}</div></div><button class="btn-icon ${lbFetching ? 'spin' : ''}" data-action="lbrefresh" type="button">⟳</button></div>
     <div class="lb-boards">${['all', ...PLANET_ORDER].map(b => `<button class="lb-board ${b === board ? 'active' : ''}" data-action="lbboard" data-id="${b}" type="button">${b === 'all' ? '🏆 Общий' : PL(b).icon + ' ' + PL(b).name}</button>`).join('')}</div>
     <div class="seg lb-period">
       <button class="seg-btn ${period === 'week' ? 'active' : ''}" data-action="lbperiod" data-id="week" type="button">📅 За неделю</button>
@@ -940,9 +1012,10 @@ function renderLeaderboardHtml() {
   if (me) {
     let rank = '—', stat;
     if (board === 'all' && period === 'all') {
-      rank = me.rank ? '#' + me.rank : '—';
+      const m = d && d.me;
+      rank = (m && m.rank) ? '#' + m.rank : me.rank ? '#' + me.rank : '—';
       const tp = totalPrestige();
-      stat = `🌀 ${tp} ${plural(tp, 'престиж', 'престижа', 'престижей')} · ★ ${fmt(me.score || 0)} · 🪐 ${state.unlocked.length}`;
+      stat = `🌀 ${tp} ${plural(tp, 'престиж', 'престижа', 'престижей')} · ★ ${fmt(Math.max(me.score || 0, progressOf(state)))} · 🪐 ${state.unlocked.length}`;
     } else {
       const m = d && d.me;
       if (m && m.rank) rank = '#' + m.rank;
@@ -950,7 +1023,10 @@ function renderLeaderboardHtml() {
       else if (!isUnlocked(board)) stat = `🔒 Планета ещё не открыта`;
       else stat = m ? `🌀 ${fmt(m.prestige || 0)} · ${PL(board).stageWord} ${m.era + 1} · 🏗 ${fmt(m.buildings)}` : 'Пока без результата';
     }
-    html += `<div class="lb-me"><div class="lb-me-rank">${rank}</div><div class="avatar" style="${avatarStyle(me.nickname)}">${esc(initialOf(me.nickname))}</div><div class="lb-me-info"><div class="lb-me-name">${esc(me.nickname)}</div><div class="lb-me-stat">${stat}</div></div></div>`;
+    const meKey = 'me:' + board + ':' + period, prevMe = lbPrevRanks.get(meKey);
+    const meUp = prevMe && rank !== '—' && parseInt(rank.slice(1), 10) < prevMe;
+    if (rank !== '—') lbPrevRanks.set(meKey, parseInt(rank.slice(1), 10));
+    html += `<div class="lb-me ${meUp ? 'up' : ''}"><div class="lb-me-rank">${rank}${meUp ? `<span class="lb-move">▲${prevMe - parseInt(rank.slice(1), 10)}</span>` : ''}</div><div class="avatar" style="${avatarStyle(me.nickname)}">${esc(initialOf(me.nickname))}</div><div class="lb-me-info"><div class="lb-me-name">${esc(me.nickname)}</div><div class="lb-me-stat">${stat}</div></div></div>`;
   }
   if (d && d.players.length) {
     const myLc = me ? me.nickname.toLowerCase() : '';
@@ -958,7 +1034,10 @@ function renderLeaderboardHtml() {
       const rank = i + 1;
       const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank;
       const mine = p.nickname.toLowerCase() === myLc;
-      return `<div class="lb-row ${rank <= 3 ? 'top' + rank : ''} ${mine ? 'mine' : ''}" style="--i:${Math.min(i, 12)}"><div class="lb-rank">${medal}</div><div class="avatar sm" style="${avatarStyle(p.nickname)}">${esc(initialOf(p.nickname))}</div><div class="lb-name">${esc(p.nickname)}${mine ? '<span class="you">вы</span>' : ''}</div><div class="lb-stat">${lbStat(p, board, period)}</div></div>`;
+      const k = board + ':' + period + ':' + p.nickname.toLowerCase(), prev = lbPrevRanks.get(k);
+      lbPrevRanks.set(k, rank);
+      const mv = prev && prev !== rank ? (rank < prev ? 'up' : 'down') : '';
+      return `<div class="lb-row ${rank <= 3 ? 'top' + rank : ''} ${mine ? 'mine' : ''} ${mv}" style="--i:${Math.min(i, 12)}"><div class="lb-rank">${medal}${mv === 'up' ? `<span class="lb-move">▲${prev - rank}</span>` : ''}</div><div class="avatar sm" style="${avatarStyle(p.nickname)}">${esc(initialOf(p.nickname))}</div><div class="lb-name">${esc(p.nickname)}${mine ? '<span class="you">вы</span>' : ''}</div><div class="lb-stat">${lbStat(p, board, period)}</div></div>`;
     }).join('');
   } else if (lbLoading || (!d && !lbError)) {
     html += '<div class="skeleton"></div>'.repeat(6);
@@ -1924,6 +2003,7 @@ function buyBuilding(id) {
   renderAll();
   markBought(`[data-card="${id}"]`, '+' + n);
   saveLocal();
+  if (!syncTimer) queueSync(5000);   // постройки считаются в топе планеты
 }
 function setBuyMode(m) {
   m = m === 'max' ? 'max' : (BUY_MODES.includes(+m) ? +m : 1);
@@ -2408,7 +2488,7 @@ function costSig(s) { return Object.entries(s).map(([k, v]) => getRes(k) >= v ? 
 function panelSig() {
   const t = ui.tab, pid = cur();
   const base = pid + ps(pid).era + t;
-  if (t === 'top') return base + lbVer + ui.lbBoard + ui.lbPeriod + (myProfile ? myProfile.rank + ':' + myProfile.score : '') + totalPrestige();
+  if (t === 'top') { const l = myLocalEntry(ui.lbBoard, ui.lbPeriod); return base + lbVer + ui.lbBoard + ui.lbPeriod + (myProfile ? myProfile.rank + ':' + myProfile.score : '') + totalPrestige() + (l ? ':' + l.score : ''); }
   if (t === 'rebirth') return base + prestigeInfo(pid).goals.map(g => g.ok ? 1 : (g.kind === 'stage' ? 0 : Math.floor(g.have / g.goal * 20))).join('') + prestigeCount(pid)
     + GLOBAL_PERKS.map(p => (perk(p.id) < p.max && state.gems >= perkCost(p, perk(p.id))) ? 1 : 0).join('')
     + PL(pid).perks.map(p => (ppk(pid, p.id) < p.max && state.gems >= perkCost(p, ppk(pid, p.id))) ? 1 : 0).join('');
