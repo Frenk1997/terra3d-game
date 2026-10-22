@@ -1,5 +1,7 @@
-# Выкладывает сервер (вход, рейтинг, сохранения) и веб-версию игры на Cloudflare.
-# Пока не заданы секреты Cloudflare и Google, сценарий просто пропускается с предупреждением.
+# Выкладывает сервер (вход, рейтинг, сохранения) и веб-версию игры.
+#  • Cloudflare — пока не заданы его секреты, шаг пропускается с предупреждением.
+#  • Свой сервер (VPS) — если задан секрет VPS_HOST: игра переезжает туда (в России работает без VPN),
+#    база один раз переносится с Cloudflare, а Cloudflare дальше только переадресует на новый адрес.
 name: Deploy server
 
 on:
@@ -13,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  actions: write   # пересобрать APK, когда у игры появился свой сервер (новый адрес)
 
 concurrency:
   group: deploy-server
@@ -21,7 +24,9 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
+    env:
+      HAS_VPS: ${{ secrets.VPS_HOST != '' }}
     steps:
       - name: Получить код
         uses: actions/checkout@v5
@@ -31,6 +36,27 @@ jobs:
         with:
           node-version: 22
 
+      # Свой сервер (VPS, например в России): игра работает без VPN. Включается секретом VPS_HOST.
+      - name: Выложить на свой сервер (VPS)
+        id: vps
+        if: env.HAS_VPS == 'true'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          SERVER_DOMAIN: ${{ secrets.SERVER_DOMAIN }}
+          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          PROMO_CODES: ${{ secrets.PROMO_CODES }}
+          FORCE_UPDATE: ${{ secrets.FORCE_UPDATE }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash server/vps/deploy.sh
+
+      # Когда есть свой сервер, Cloudflare только переадресует туда (MOVED_TO) — база одна, на VPS
       - name: Выложить на Cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -40,5 +66,40 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           PROMO_CODES: ${{ secrets.PROMO_CODES }}
           FORCE_UPDATE: ${{ secrets.FORCE_UPDATE }}
+          MOVED_TO: ${{ steps.vps.outputs.url }}
           APK_URL: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/terra3d.apk
         run: bash server/deploy.sh
+
+      - name: Перенести базу на свой сервер (один раз)
+        if: steps.vps.outputs.url != ''
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bash server/vps/migrate.sh
+
+      - name: Проверить вход через Google на новом адресе
+        if: steps.vps.outputs.url != ''
+        continue-on-error: true
+        run: bash server/vps/check-google.sh "${{ steps.vps.outputs.url }}"
+
+      - name: Пересобрать APK с адресом своего сервера
+        if: steps.vps.outputs.url != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.vps.outputs.url }}
+        run: |
+          # последний APK уже ходит на этот адрес — пересобирать не нужно
+          have="$(curl -fsSL --max-time 20 "${{ github.server_url }}/${GITHUB_REPOSITORY}/releases/latest/download/version.json" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("api",""))' 2>/dev/null || true)"
+          if [ "$have" = "$URL" ]; then echo "APK уже ходит на $URL"; exit 0; fi
+          # этот же коммит уже собирается сценарием «Build APK»
+          busy="$(gh run list -R "$GITHUB_REPOSITORY" -w android.yml --commit "$GITHUB_SHA" --json status -q '[.[] | select(.status != "completed")] | length' 2>/dev/null || echo 0)"
+          if [ "${busy:-0}" != 0 ]; then echo "APK для этого коммита уже собирается"; exit 0; fi
+          gh workflow run android.yml -R "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+          echo "Запущена сборка APK, который ходит на $URL"
+          echo "📱 Запущена сборка нового APK — он ходит на $URL. Старые версии попросят обновиться." >> "$GITHUB_STEP_SUMMARY"

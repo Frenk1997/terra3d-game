@@ -39,6 +39,25 @@ jobs:
             echo "::warning title=Демо-сборка::В web/config.js не указан адрес сервера — APK будет работать только в демо-режиме (без входа и рейтинга)."
           fi
 
+      # Если у игры есть свой сервер (секрет VPS_HOST, см. SETUP.md) — APK ходит туда, а не на Cloudflare
+      - name: Адрес сервера
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          SERVER_DOMAIN: ${{ secrets.SERVER_DOMAIN }}
+        run: |
+          URL="$(bash server/vps/public-url.sh)"
+          if [ -n "$URL" ]; then
+            if curl -fsS --max-time 15 --retry 3 "$URL/api/health" | grep -q '"terra":true'; then
+              sed -i -E "s#^([[:space:]]*API_URL:).*#\1 '$URL',#" web/config.js
+              echo "APK ходит на свой сервер: $URL"
+            else
+              echo "::warning title=Свой сервер не отвечает::$URL недоступен — APK собран со старым адресом из web/config.js. Сначала запустите сценарий «Deploy server»."
+            fi
+          fi
+          API="$(sed -nE "s/^[[:space:]]*API_URL:[[:space:]]*'([^']*)'.*/\1/p" web/config.js | head -1)"
+          echo "Сервер в APK: $API"
+          echo "TERRA_API=$API" >> "$GITHUB_ENV"
+
       - name: Собрать APK
         working-directory: android
         env:
@@ -65,7 +84,7 @@ jobs:
           if re.match(r"^(Update|Merge|Add files|Create|Delete|Revert)\b", notes):
               notes = ""
           with open("version.json", "w", encoding="utf-8") as f:
-              json.dump({"build": n, "version": "1.0.%d" % n, "notes": notes[:300]}, f, ensure_ascii=False)
+              json.dump({"build": n, "version": "1.0.%d" % n, "notes": notes[:300], "api": os.environ.get("TERRA_API", "")}, f, ensure_ascii=False)
           PY
           cat version.json
 

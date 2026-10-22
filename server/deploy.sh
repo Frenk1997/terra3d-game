@@ -11,6 +11,8 @@
 #   GITHUB_REPO            (необязательно) «владелец/репозиторий» с релизами APK; в GitHub Actions берётся сам
 #   PROMO_CODES            (необязательно) свои промокоды, по одному в строке
 #   FORCE_UPDATE           (необязательно) 0 — пускать в игру устаревшие версии APK
+#   MOVED_TO               (необязательно) https://адрес своего сервера (VPS): игра переехала туда,
+#                          Cloudflare только переадресует (ставит сценарий, когда настроен VPS)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -53,17 +55,30 @@ echo "База: $DB_ID"
 echo "== 2/4 Таблицы"
 "${WRANGLER[@]}" d1 execute terra --remote --file=schema.sql
 
-echo "== 3/4 Веб-версия игры"
-rm -rf public
-cp -R ../web public
-if [ -n "${APK_URL:-}" ]; then
-  sed -i.bak "s#APK_URL: ''#APK_URL: '${APK_URL}'#" public/config.js && rm -f public/config.js.bak
+MOVED_TO="$(printf '%s' "${MOVED_TO:-}" | sed -E 's#/+$##')"
+if [ -n "$MOVED_TO" ] && ! printf '%s' "$MOVED_TO" | grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$'; then
+  echo "::error title=Неверный MOVED_TO::Нужен адрес вида https://example.ru, а не «$MOVED_TO»"; exit 1
 fi
+
+echo "== 3/4 Веб-версия игры"
 # Версия сайта: открытая вкладка со старым кодом увидит, что вышло новое, и перезагрузится сама.
 # Тот же номер — в адресах скриптов, чтобы браузер не взял старые файлы из кэша.
 SITE_VERSION="$(printf '%s' "${GITHUB_SHA:-$(date +%s)}" | cut -c1-12)"
-printf '\nwindow.TERRA_SITE_VERSION = %s;\n' "'${SITE_VERSION}'" >> public/config.js
-sed -i.bak -E "s#(src=\"(config|js/[a-z]+)\.js)\"#\1?v=${SITE_VERSION}\"#g" public/index.html && rm -f public/index.html.bak
+rm -rf public
+if [ -n "$MOVED_TO" ]; then
+  # игра переехала на свой сервер: здесь — только страница-переадресация (переносит вход на новый адрес)
+  mkdir public
+  sed "s#__TO__#${MOVED_TO}#g" vps/moved.html > public/index.html
+  cp ../web/privacy.html ../web/icon-192.png public/
+  echo "Игра переехала на ${MOVED_TO} — Cloudflare только переадресует туда"
+else
+  cp -R ../web public
+  if [ -n "${APK_URL:-}" ]; then
+    sed -i.bak "s#APK_URL: ''#APK_URL: '${APK_URL}'#" public/config.js && rm -f public/config.js.bak
+  fi
+  printf '\nwindow.TERRA_SITE_VERSION = %s;\n' "'${SITE_VERSION}'" >> public/config.js
+  sed -i.bak -E "s#(src=\"(config|js/[a-z]+)\.js)\"#\1?v=${SITE_VERSION}\"#g" public/index.html && rm -f public/index.html.bak
+fi
 printf '/*\n  Cache-Control: no-cache\n' > public/_headers
 echo "Версия сайта: ${SITE_VERSION}"
 
@@ -74,6 +89,8 @@ VARS=(--var "GOOGLE_CLIENT_ID:${GOOGLE_CLIENT_ID}" --var "SITE_VERSION:${SITE_VE
 if [ -n "$REPO" ]; then VARS+=(--var "GITHUB_REPO:${REPO}"); fi
 # FORCE_UPDATE=0 — пускать в игру устаревшие APK (по умолчанию играть можно только в последней версии)
 if [ -n "${FORCE_UPDATE:-}" ]; then VARS+=(--var "FORCE_UPDATE:${FORCE_UPDATE}"); fi
+# MOVED_TO — игра переехала на свой сервер (без него — обычный режим, игра на Cloudflare)
+if [ -n "$MOVED_TO" ]; then VARS+=(--var "MOVED_TO:${MOVED_TO}"); fi
 "${WRANGLER[@]}" deploy "${VARS[@]}"
 printf '%s' "$GOOGLE_CLIENT_SECRET" | "${WRANGLER[@]}" secret put GOOGLE_CLIENT_SECRET
 printf '%s' "$SESSION_SECRET" | "${WRANGLER[@]}" secret put SESSION_SECRET

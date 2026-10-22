@@ -314,6 +314,8 @@ function clientInfo(request) {
 }
 const repoOf = (env) => (env.GITHUB_REPO && /^[\w.-]+\/[\w.-]+$/.test(env.GITHUB_REPO) ? env.GITHUB_REPO : '');
 const forceUpdate = (env) => String(env.FORCE_UPDATE ?? '1') !== '0';
+const httpsBase = (v) => { const u = String(v || '').trim().replace(/\/+$/, ''); return /^https:\/\/[a-z0-9.-]+(:\d{1,5})?(\/[\w.-]+)*$/i.test(u) ? u : ''; };
+const apkBase = (env) => httpsBase(env.APK_BASE);
 
 async function latestRelease(env) {
   const repo = repoOf(env);
@@ -337,9 +339,10 @@ async function latestRelease(env) {
           build,
           version: String(j.version || '1.0.' + build).slice(0, 20),
           notes: String(j.notes || '').slice(0, 300),
-          // ссылка на конкретную версию: «latest» браузер может запомнить и снова скачать старый APK
+          // ссылка на конкретную версию: «latest» браузер может запомнить и снова скачать старый APK.
+          // APK_BASE — свой сервер раздаёт копию APK (в России так надёжнее, чем с GitHub)
           url: /^\d+\.\d+\.\d+$/.test(String(j.version || ''))
-            ? `https://github.com/${repo}/releases/download/v${j.version}/terra3d.apk`
+            ? (apkBase(env) ? `${apkBase(env)}/terra3d-${j.version}.apk` : `https://github.com/${repo}/releases/download/v${j.version}/terra3d.apk`)
             : `https://github.com/${repo}/releases/latest/download/terra3d.apk`
         };
       }
@@ -702,6 +705,44 @@ async function handleClient(request, env) {
 
 const PROTECTED = ['/api/me', '/api/profile', '/api/sync', '/api/reset', '/api/account', '/api/redeem'];
 
+// ---------- переезд на другой сервер ----------
+// MOVED_TO = 'https://новый-адрес' — игра переехала (например, на сервер в России, где Cloudflare ограничен).
+// Эта копия больше не трогает свою базу: страницы и вход уводят на новый адрес, запросы игры
+// пересылаются туда же, а устаревшие APK получают «Обновите игру» (новая версия ходит на новый адрес сама).
+async function handleMoved(request, url, path, env, to) {
+  if (path === '/api/health') return json({ terra: true, configured: true, moved: to });
+  if (path === '/api/client' && request.method === 'GET') return handleClient(request, env);
+  if (path.startsWith('/api/')) {
+    const old = await outdatedApp(request, env);
+    if (old) return request.headers.get('X-Terra-Client') ? json({ error: 'update_required', latest: old }, 426) : fail(401, 'update_required');
+    return proxyTo(to, request, url);
+  }
+  if (path === '/auth/google/start' && url.searchParams.get('app') === '1') {
+    const old = await blockingRelease(parseInt(url.searchParams.get('build') || '0', 10) || 0, env);
+    if (old) return updatePage(old);
+  }
+  return redirect(to + url.pathname + url.search);
+}
+async function proxyTo(to, request, url) {
+  const headers = new Headers();
+  for (const k of ['authorization', 'content-type', 'user-agent', 'x-terra-client']) {
+    const v = request.headers.get(k);
+    if (v) headers.set(k, v);
+  }
+  const init = { method: request.method, headers, redirect: 'manual' };
+  if (!['GET', 'HEAD'].includes(request.method)) init.body = await request.arrayBuffer();
+  try {
+    const r = await fetch(to + url.pathname + url.search, init);
+    const h = new Headers(r.headers);
+    for (const [k, v] of Object.entries(CORS)) h.set(k, v);
+    h.set('Cache-Control', 'no-store');
+    return new Response(r.body, { status: r.status, headers: h });
+  } catch (e) {
+    console.error('proxy', e && e.message);
+    return fail(502, 'server_unreachable');
+  }
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
@@ -709,6 +750,8 @@ export default {
     const path = url.pathname.replace(/\/+$/, '');
     const m = request.method;
     try {
+      const moved = httpsBase(env.MOVED_TO);
+      if (moved) return await handleMoved(request, url, path, env, moved);
       if (path === '/api/health' && m === 'GET') return json({ terra: true, configured: isConfigured(env) });
       if (path === '/api/leaderboard' && m === 'GET') return await handleLeaderboard(request, url, env);
       if (path === '/api/client' && m === 'GET') return await handleClient(request, env);

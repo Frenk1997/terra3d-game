@@ -480,6 +480,23 @@ async function completeLogin(code, st, error) {
   }
 }
 
+// Сайт переехал на новый адрес: старый адрес передаёт сюда вход и сохранение (#move=…), чтобы не входить заново.
+// Принимаем, только если пришли именно со старого адреса игры и на новом ещё не вошли.
+function adoptMovedSession() {
+  const h = location.hash || '';
+  if (!h.startsWith('#move=')) return;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { location.hash = ''; }
+  try {
+    const from = new URL(String(window.TERRA_MOVED_FROM || '')).origin;
+    if (!document.referrer || new URL(document.referrer).origin !== from || loadSession()) return;
+    const d = JSON.parse(decodeURIComponent(h.slice(6)));
+    const s = d && d.session;
+    if (!s || typeof s.token !== 'string' || s.token.length > 2000 || typeof s.uid !== 'string' || !/^[\w-]{1,128}$/.test(s.uid)) return;
+    localStorage.setItem('terra_session', JSON.stringify({ token: s.token, uid: s.uid, nickname: typeof s.nickname === 'string' ? s.nickname : null }));
+    if (d.save && typeof d.save === 'object' && !readLocal(s.uid)) localStorage.setItem('terra_save_' + s.uid, JSON.stringify(d.save));
+  } catch (e) {}
+}
+
 function readAuthFromHash() {
   const h = location.hash || '';
   const m = h.match(/^#auth=([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/);
@@ -588,6 +605,7 @@ async function boot() {
   setLoginBusy(true, 'Загрузка…');
   await resolveApi();
   if (!CONFIGURED) { showLogin(); return; }
+  adoptMovedSession();
   const fromHash = readAuthFromHash();
   if (fromHash) { await completeLogin(fromHash.code, fromHash.state, fromHash.error); return; }
   session = loadSession();
