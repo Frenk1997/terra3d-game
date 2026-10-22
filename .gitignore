@@ -8,3 +8,6 @@ server/node_modules/
 server/.wrangler/
 *.apk
 .DS_Store
+
+roblox/sourcemap.json
+roblox/tests/_sources.luau

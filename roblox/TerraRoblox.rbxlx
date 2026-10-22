@@ -1,0 +1,1991 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<External>null</External>
+	<External>nil</External>
+	<Item class="Players" referent="RBX00000001">
+		<Properties>
+			<string name="Name">Players</string>
+			<bool name="CharacterAutoLoads">false</bool>
+		</Properties>
+	</Item>
+	<Item class="ReplicatedStorage" referent="RBX00000002">
+		<Properties>
+			<string name="Name">ReplicatedStorage</string>
+		</Properties>
+		<Item class="ModuleScript" referent="RBX00000003">
+			<Properties>
+				<string name="Name">TerraShared</string>
+				<ProtectedString name="Source"><![CDATA[-- Terra 3D для Roblox: данные Земли и экономика (общий модуль для сервера и клиента).
+-- Те же эпохи, постройки, цены и формулы, что в основной игре (web/js/data.js, web/js/game.js).
+-- Модуль чистый: не трогает Roblox API, поэтому его можно проверять тестами вне Roblox.
+
+local Shared = {}
+
+Shared.VERSION = 1
+Shared.GROWTH = 1.18            -- каждая следующая постройка дороже на 18%
+Shared.OFFLINE_MAX_SEC = 8 * 3600
+Shared.OFFLINE_EFFICIENCY = 0.5
+Shared.GOLDEN_CHANCE = 0.12
+Shared.ASTEROID_FLIGHT = 15     -- секунд до удара
+Shared.ASTEROID_FIRST = { 90, 150 }
+Shared.ASTEROID_NEXT = { 150, 300 }
+Shared.BUY_MODES = { 1, 10, 50, 100, "max" }
+
+Shared.RES_ORDER = { "solar", "water", "air", "biomass", "science" }
+Shared.RES = {
+	solar = { name = "Солнце", icon = "☀️", color = { 251, 191, 36 } },
+	water = { name = "Вода", icon = "💧", color = { 56, 189, 248 } },
+	air = { name = "Воздух", icon = "💨", color = { 186, 230, 253 } },
+	biomass = { name = "Биомасса", icon = "🌱", color = { 74, 222, 128 } },
+	science = { name = "Наука", icon = "🔬", color = { 196, 181, 253 } },
+	gems = { name = "Кристаллы", icon = "💎", color = { 129, 140, 248 } },
+}
+Shared.CLICK_RES = "solar"
+Shared.START = { solar = 100, water = 50 }
+
+Shared.ERAS = {
+	{ name = "Протопланета", desc = "Раскалённый шар лавы и вулканов. Здесь всё только начинается.", click = 1, halo = { 249, 115, 22 } },
+	{ name = "Первичный океан", desc = "Кометы принесли воду — планету покрыл бескрайний океан.", click = 3, halo = { 14, 165, 233 }, cost = { solar = 150, water = 60 } },
+	{ name = "Рождение атмосферы", desc = "Гейзеры и вулканы наполнили небо газами. Появились облака.", click = 7, halo = { 56, 189, 248 }, cost = { solar = 350, water = 200, air = 100 } },
+	{ name = "Первая жизнь", desc = "В тёплых морях зародились первые микробы и водоросли.", click = 15, halo = { 45, 212, 191 }, cost = { water = 900, air = 600, biomass = 60 } },
+	{ name = "Расцвет биосферы", desc = "Континенты зазеленели, воздух стал пригодным для дыхания.", click = 30, halo = { 34, 197, 94 }, cost = { water = 3000, air = 2500, biomass = 900 } },
+	{ name = "Эпоха гигантов", desc = "По планете бродят исполинские ящеры, джунгли до небес.", click = 60, halo = { 22, 163, 74 }, cost = { solar = 7000, air = 5000, biomass = 3000 } },
+	{ name = "Первые цивилизации", desc = "Огонь, земледелие и первые города. Появилась наука.", click = 120, halo = { 234, 179, 8 }, cost = { solar = 25000, water = 18000, biomass = 12000 } },
+	{ name = "Индустриальная эра", desc = "Фабрики, железные дороги и смог над мегаполисами.", click = 260, halo = { 245, 158, 11 }, cost = { solar = 90000, biomass = 40000, science = 2000 } },
+	{ name = "Космическая эра", desc = "Ракеты уходят к звёздам. Скоро — путь к Марсу!", click = 550, halo = { 96, 165, 250 }, cost = { solar = 350000, air = 150000, science = 12000 } },
+	{ name = "Звёздная империя", desc = "Рой Дайсона питает цивилизацию, покоряющую систему.", click = 1200, halo = { 192, 132, 252 }, cost = { solar = 1800000, water = 600000, science = 80000 } },
+	{ name = "Орбитальные кольца", desc = "Города на кольце вокруг планеты, лифты до самой орбиты.", click = 2600, halo = { 56, 189, 248 }, cost = { solar = 12e6, air = 4e6, science = 5e5 } },
+	{ name = "Планетарный разум", desc = "Сеть ИИ бережно управляет климатом, океанами и лесами.", click = 5600, halo = { 34, 211, 238 }, cost = { solar = 8e7, water = 3e7, science = 3e6 } },
+	{ name = "Звёздные врата", desc = "Кольцо-портал на орбите открывает путь к другим звёздам.", click = 12000, halo = { 167, 139, 250 }, cost = { solar = 6e8, air = 2.5e8, science = 6e7 } },
+	{ name = "Межзвёздная держава", desc = "Колонии Земли сияют в соседних звёздных системах.", click = 26000, halo = { 244, 114, 182 }, cost = { solar = 2e10, biomass = 2e9, science = 2e9 } },
+	{ name = "Галактический маяк", desc = "Свет Земли виден с другого края галактики.", click = 56000, halo = { 253, 230, 138 }, cost = { solar = 1.5e11, water = 5e10, science = 1.5e10 } },
+}
+Shared.MAX_ERA = #Shared.ERAS - 1   -- эпохи считаются с нуля, как в основной игре
+
+-- u — эпоха (с нуля), с которой постройка открывается
+Shared.BUILDINGS = {
+	{ id = "solar_collector", u = 0, name = "Поглотитель света", icon = "🔆", desc = "Улавливает солнечные фотоны.", cost = { solar = 15 }, prod = { solar = 2.5 } },
+	{ id = "ice_comet", u = 0, name = "Притяжение комет", icon = "☄️", desc = "Направляет ледяные кометы в океаны.", cost = { solar = 30 }, prod = { water = 1.8 } },
+	{ id = "geyser", u = 1, name = "Гейзеры", icon = "🌋", desc = "Выбрасывают пар и газы.", cost = { solar = 75, water = 25 }, prod = { water = 3.5, air = 1.8 } },
+	{ id = "gas_separator", u = 2, name = "Ионизатор неба", icon = "🌪️", desc = "Формирует воздушный слой.", cost = { solar = 220, water = 120 }, prod = { air = 6.5 } },
+	{ id = "cyanobacteria", u = 2, name = "Цианобактерии", icon = "🦠", desc = "Первые микробы выделяют кислород.", cost = { solar = 180, water = 100, air = 30 }, prod = { air = 4.5, biomass = 1.8 } },
+	{ id = "coral_reef", u = 3, name = "Коралловые рифы", icon = "🐚", desc = "Богатые подводные экосистемы.", cost = { water = 450, air = 250, biomass = 40 }, prod = { biomass = 5.5, water = 6 } },
+	{ id = "thunderstorm", u = 4, name = "Грозовые фронты", icon = "🌩️", desc = "Молнии заряжают атмосферу.", cost = { solar = 2500, air = 1200 }, prod = { solar = 40, air = 15 } },
+	{ id = "relic_forest", u = 4, name = "Реликтовые леса", icon = "🌲", desc = "Озеленяют континенты.", cost = { solar = 800, water = 600, biomass = 180 }, prod = { air = 16, biomass = 13 } },
+	{ id = "ocean_currents", u = 5, name = "Океанские течения", icon = "🌊", desc = "Перемешивают тепло и воду.", cost = { solar = 9000, water = 6000 }, prod = { water = 120, solar = 60 } },
+	{ id = "fauna", u = 5, name = "Гиганты", icon = "🦕", desc = "Исполинские ящеры удобряют землю.", cost = { air = 5000, biomass = 2500 }, prod = { biomass = 70 } },
+	{ id = "tribes", u = 6, name = "Первые племена", icon = "🔥", desc = "Огонь, орудия и первые знания.", cost = { solar = 20000, biomass = 9000 }, prod = { biomass = 120, science = 4 } },
+	{ id = "farms", u = 6, name = "Земледелие", icon = "🌾", desc = "Поля кормят растущие народы.", cost = { water = 30000, biomass = 15000 }, prod = { biomass = 400, science = 3 } },
+	{ id = "ancient_academy", u = 6, name = "Библиотеки", icon = "🏛️", desc = "Хранят и умножают знания.", cost = { solar = 30000, biomass = 12000 }, prod = { science = 15, solar = 150 } },
+	{ id = "factories", u = 7, name = "Фабрики", icon = "🏭", desc = "Паровые машины и конвейеры.", cost = { solar = 120000, science = 2500 }, prod = { solar = 1500, science = 40 } },
+	{ id = "eco_city", u = 7, name = "Мегаполисы", icon = "🏙️", desc = "Огни городов видны из космоса.", cost = { solar = 250000, air = 80000, science = 6000 }, prod = { science = 250, solar = 1200, biomass = 600 } },
+	{ id = "spaceport", u = 8, name = "Космодром", icon = "🚀", desc = "Запуски к другим мирам.", cost = { solar = 900000, science = 30000 }, prod = { science = 1200, solar = 6000 } },
+	{ id = "orbital_mirror", u = 8, name = "Орбитальные зеркала", icon = "🛰️", desc = "Собирают свет на орбите.", cost = { solar = 2000000, science = 80000 }, prod = { solar = 25000, air = 5000 } },
+	{ id = "dyson_swarm", u = 9, name = "Рой Дайсона", icon = "🌞", desc = "Мегаструктура вокруг Солнца.", cost = { solar = 15000000, science = 800000 }, prod = { solar = 250000, water = 60000, air = 60000, science = 20000 } },
+	{ id = "weather_net", u = 10, name = "Погодная сеть", icon = "⛈️", desc = "Спутники управляют дождями и ветрами.", cost = { air = 2e7, water = 2e7 }, prod = { air = 7e5, water = 6e5 } },
+	{ id = "orbital_ring", u = 10, name = "Орбитальное кольцо", icon = "⭕", desc = "Город длиной в экватор.", cost = { solar = 6e7, science = 2.5e6 }, prod = { solar = 1.4e6, science = 6e4 } },
+	{ id = "gaia_ai", u = 11, name = "Разум Геи", icon = "🧠", desc = "ИИ, который заботится о биосфере.", cost = { air = 4e7, science = 1.2e7 }, prod = { biomass = 1e6, air = 7e5, water = 7e5, science = 1.8e5 } },
+	{ id = "fusion_ocean", u = 12, name = "Термоядерные моря", icon = "♨️", desc = "Океаны дают энергию синтеза.", cost = { water = 3e8, solar = 3e8 }, prod = { water = 9e6, solar = 7e6, air = 2.5e6 } },
+	{ id = "ark_gardens", u = 12, name = "Сады-ковчеги", icon = "🌴", desc = "Парящие сады со всей жизнью Земли.", cost = { water = 1.5e8, air = 1e8 }, prod = { biomass = 6e6, air = 3.5e6 } },
+	{ id = "stargate", u = 13, name = "Звёздные врата", icon = "⛩️", desc = "Портал к другим звёздам.", cost = { solar = 5e10, science = 4e9 }, prod = { science = 6e7, solar = 6e8, water = 2e8 } },
+	{ id = "beacon", u = 14, name = "Галактический маяк", icon = "🗼", desc = "Луч, видимый всей галактике.", cost = { solar = 6e11, science = 6e10 }, prod = { solar = 6e9, water = 1.5e9, air = 1.5e9, biomass = 6e8, science = 6e8 } },
+}
+Shared.BUILDING_BY_ID = {}
+for i, b in ipairs(Shared.BUILDINGS) do
+	b.index = i
+	Shared.BUILDING_BY_ID[b.id] = b
+end
+
+-- Улучшения Земли (за кристаллы): step — прибавка за уровень
+Shared.PERKS = {
+	{ id = "gaia", name = "Дыхание Геи", icon = "🌿", kind = "prod", step = 0.25, max = 5, base = 1, scale = 1.8, desc = "Постройки производят больше." },
+	{ id = "tectonics", name = "Тектоника", icon = "🌋", kind = "click", step = 0.5, max = 5, base = 1, scale = 1.8, desc = "Тапы по планете сильнее." },
+	{ id = "oceans", name = "Мудрость океанов", icon = "🌊", kind = "cheap", step = 0.08, max = 5, base = 1, scale = 1.8, desc = "Постройки и эпохи дешевле." },
+}
+-- Древо Вечности (общие улучшения)
+Shared.GLOBAL_PERKS = {
+	{ id = "autoclicker", name = "Автокликер и ПВО", icon = "🤖", max = 10, base = 1, scale = 1.6, desc = "Спутник тапает по планете и сбивает астероиды." },
+	{ id = "time_warp", name = "Искажение времени", icon = "⏳", max = 5, base = 1, scale = 2.0, desc = "Ускоряет всё производство." },
+	{ id = "cheap_build", name = "Квантовая архитектура", icon = "📐", max = 5, base = 1, scale = 1.8, desc = "Всё строится дешевле." },
+	{ id = "starter_pack", name = "Ковчег предтеч", icon = "📦", max = 5, base = 1, scale = 1.8, desc = "Запас ресурсов после престижа." },
+	{ id = "crit_solar", name = "Сверхзаряд", icon = "💥", max = 5, base = 2, scale = 2.0, desc = "15% шанс критического тапа и удара." },
+}
+Shared.PERK_BY_ID = {}
+for _, p in ipairs(Shared.PERKS) do Shared.PERK_BY_ID[p.id] = p end
+Shared.GLOBAL_BY_ID = {}
+for _, p in ipairs(Shared.GLOBAL_PERKS) do Shared.GLOBAL_BY_ID[p.id] = p end
+
+Shared.PRESTIGE = { baseStage = 4, buildBase = 30, buildStep = 22, buildSq = 3, buildCap = 1100 }
+
+-- ============================================================
+--  Состояние игрока
+-- ============================================================
+local function finite(x)
+	return type(x) == "number" and x == x and x ~= math.huge and x ~= -math.huge
+end
+Shared.finite = finite
+
+function Shared.newState()
+	local st = {
+		v = Shared.VERSION,
+		era = 0,
+		res = {},
+		counts = {},
+		gems = 0,
+		ppr = 0,                 -- сколько престижей сделано
+		perks = {},              -- Древо Вечности
+		ppk = {},                -- улучшения Земли
+		stats = { taps = 0, built = 0, asteroids = 0, golden = 0, evolves = 0, playSec = 0, maxEra = 0 },
+		lastSave = 0,
+	}
+	for _, k in ipairs(Shared.RES_ORDER) do st.res[k] = Shared.START[k] or 0 end
+	return st
+end
+
+-- Сохранение из DataStore → проверенное состояние (лишнее и битое отбрасывается)
+function Shared.sanitize(raw)
+	local st = Shared.newState()
+	if type(raw) ~= "table" then return st end
+	local function n(x, lo, hi)
+		if not finite(x) then return lo end
+		if x < lo then return lo end
+		if hi and x > hi then return hi end
+		return x
+	end
+	st.era = math.floor(n(raw.era, 0, Shared.MAX_ERA))
+	if type(raw.res) == "table" then
+		for _, k in ipairs(Shared.RES_ORDER) do st.res[k] = n(raw.res[k], 0, 1e300) end
+	end
+	if type(raw.counts) == "table" then
+		for _, b in ipairs(Shared.BUILDINGS) do
+			local c = math.floor(n(raw.counts[b.id], 0, 100000))
+			if c > 0 then st.counts[b.id] = c end
+		end
+	end
+	st.gems = math.floor(n(raw.gems, 0, 1e12))
+	st.ppr = math.floor(n(raw.ppr, 0, 1e6))
+	if type(raw.perks) == "table" then
+		for _, p in ipairs(Shared.GLOBAL_PERKS) do
+			local l = math.floor(n(raw.perks[p.id], 0, p.max))
+			if l > 0 then st.perks[p.id] = l end
+		end
+	end
+	if type(raw.ppk) == "table" then
+		for _, p in ipairs(Shared.PERKS) do
+			local l = math.floor(n(raw.ppk[p.id], 0, p.max))
+			if l > 0 then st.ppk[p.id] = l end
+		end
+	end
+	if type(raw.stats) == "table" then
+		for k, _ in pairs(st.stats) do st.stats[k] = n(raw.stats[k], 0, 1e15) end
+	end
+	st.stats.maxEra = math.max(st.stats.maxEra, st.era)
+	st.lastSave = n(raw.lastSave, 0, 1e12)
+	return st
+end
+
+-- ============================================================
+--  Экономика (те же формулы, что в основной игре)
+-- ============================================================
+function Shared.perk(st, id) return st.perks[id] or 0 end
+function Shared.ppk(st, id) return st.ppk[id] or 0 end
+function Shared.perkCost(p, lvl) return math.ceil(p.base * p.scale ^ lvl) end
+
+function Shared.perkBonus(st, kind)
+	local b = 0
+	for _, p in ipairs(Shared.PERKS) do
+		if p.kind == kind then b = b + p.step * Shared.ppk(st, p.id) end
+	end
+	return b
+end
+function Shared.planetMult(st) return 1 + st.ppr end
+function Shared.speedMult(st) return 1 + Shared.perk(st, "time_warp") * 0.25 end
+function Shared.prodMult(st, boost)
+	return Shared.planetMult(st) * Shared.speedMult(st) * (boost and 2 or 1) * (1 + Shared.perkBonus(st, "prod"))
+end
+function Shared.clickGain(st, boost)
+	local e = Shared.ERAS[st.era + 1]
+	return math.ceil(e.click * Shared.planetMult(st) * (boost and 2 or 1) * (1 + Shared.perkBonus(st, "click")))
+end
+function Shared.costMult(st)
+	return math.max(0.3, (1 - Shared.perk(st, "cheap_build") * 0.10) * (1 - Shared.perkBonus(st, "cheap")))
+end
+function Shared.critMult(st, roll)   -- roll — случайное число 0..1
+	local l = Shared.perk(st, "crit_solar")
+	if l > 0 and roll < 0.15 then return 2 + l end
+	return 1
+end
+
+function Shared.rates(st, boost)
+	local r = {}
+	for _, k in ipairs(Shared.RES_ORDER) do r[k] = 0 end
+	local m = Shared.prodMult(st, boost)
+	for _, b in ipairs(Shared.BUILDINGS) do
+		local c = st.counts[b.id] or 0
+		if c > 0 then
+			for k, v in pairs(b.prod) do r[k] = r[k] + v * c * m end
+		end
+	end
+	return r
+end
+
+local function scaled(cost, mult)
+	local s = {}
+	for k, v in pairs(cost) do s[k] = math.max(1, math.ceil(v * mult)) end
+	return s
+end
+function Shared.canPay(st, cost)
+	if not cost then return false end
+	for k, v in pairs(cost) do
+		local have = (k == "gems") and st.gems or (st.res[k] or 0)
+		if have < v then return false end
+	end
+	return true
+end
+function Shared.pay(st, cost)
+	for k, v in pairs(cost) do
+		if k == "gems" then st.gems = math.max(0, st.gems - v) else st.res[k] = math.max(0, (st.res[k] or 0) - v) end
+	end
+end
+
+-- Цена n построек подряд — сумма геометрической прогрессии
+function Shared.bulkCost(st, b, n)
+	n = n or 1
+	local g, c = Shared.GROWTH, st.counts[b.id] or 0
+	return scaled(b.cost, g ^ c * (g ^ n - 1) / (g - 1) * Shared.costMult(st))
+end
+function Shared.maxAffordable(st, b, cap)
+	cap = cap or 1000
+	local g, c, m = Shared.GROWTH, st.counts[b.id] or 0, Shared.costMult(st)
+	local n = cap
+	for k, v in pairs(b.cost) do
+		local unit = v * m * g ^ c
+		local have = st.res[k] or 0
+		local k2 = math.floor(math.log(have * (g - 1) / unit + 1) / math.log(g) + 1e-9)
+		if k2 < n then n = k2 end
+	end
+	if not finite(n) or n < 0 then n = 0 end
+	while n > 0 and not Shared.canPay(st, Shared.bulkCost(st, b, n)) do n = n - 1 end
+	return n
+end
+function Shared.buyCount(st, b, mode)
+	if mode == "max" then return math.max(1, Shared.maxAffordable(st, b)) end
+	return mode
+end
+
+function Shared.eraCost(st)
+	local nxt = Shared.ERAS[st.era + 2]
+	if not nxt then return nil end
+	return scaled(nxt.cost, Shared.costMult(st))
+end
+function Shared.buildingsTotal(st)
+	local t = 0
+	for _, c in pairs(st.counts) do t = t + c end
+	return t
+end
+
+-- ---------- Престиж ----------
+function Shared.prestigeGoals(n)
+	local C, max = Shared.PRESTIGE, Shared.MAX_ERA
+	local want = C.baseStage + n
+	local goals = {
+		{ kind = "stage", need = math.min(max, want) },
+		{ kind = "build", need = math.min(C.buildCap, C.buildBase + C.buildStep * n + C.buildSq * n * n) },
+	}
+	if want > max then
+		local base = Shared.ERAS[max + 1].cost.solar
+		table.insert(goals, { kind = "res", res = "solar", need = math.floor(base * 2 * (want - max) ^ 1.75 + 0.5) })
+	end
+	return goals
+end
+function Shared.prestigeGems(n, era) return 2 + math.floor(era / 2) + math.floor(n * 0.75) end
+function Shared.prestigeInfo(st)
+	local goals = Shared.prestigeGoals(st.ppr)
+	local ready = true
+	for _, g in ipairs(goals) do
+		if g.kind == "stage" then g.have = st.era; g.ok = st.era >= g.need
+		elseif g.kind == "build" then g.have = Shared.buildingsTotal(st); g.ok = g.have >= g.need
+		else g.have = st.res[g.res] or 0; g.ok = g.have >= g.need end
+		if not g.ok then ready = false end
+	end
+	return { n = st.ppr, goals = goals, ready = ready, gems = Shared.prestigeGems(st.ppr, st.era), nextMult = st.ppr + 2 }
+end
+
+-- Общий топ: престиж — 100 очков, эпоха — 1 очко (как в основной игре)
+function Shared.score(st) return st.ppr * 100 + st.era end
+
+-- ============================================================
+--  Действия (вызывает сервер; возвращают true/false и подробности)
+-- ============================================================
+function Shared.tick(st, dt, boost)
+	if dt <= 0 then return end
+	local r = Shared.rates(st, boost)
+	for k, v in pairs(r) do st.res[k] = st.res[k] + v * dt end
+end
+
+function Shared.offline(st, sec)
+	sec = math.min(sec, Shared.OFFLINE_MAX_SEC)
+	if sec <= 60 then return 0 end
+	local r = Shared.rates(st, false)
+	for k, v in pairs(r) do st.res[k] = st.res[k] + v * sec * Shared.OFFLINE_EFFICIENCY end
+	return r.solar * sec * Shared.OFFLINE_EFFICIENCY
+end
+
+function Shared.tap(st, count, rolls)
+	local gain = 0
+	local g = Shared.clickGain(st, false)
+	for i = 1, count do gain = gain + g * Shared.critMult(st, rolls and rolls[i] or 1) end
+	st.res.solar = st.res.solar + gain
+	st.stats.taps = st.stats.taps + count
+	return gain
+end
+
+function Shared.buy(st, id, mode)
+	local b = Shared.BUILDING_BY_ID[id]
+	if not b or b.u > st.era then return false, "locked" end
+	local want = 1
+	if mode == "max" then want = 1000
+	elseif mode == 10 or mode == 50 or mode == 100 then want = mode end
+	local n = math.min(want, Shared.maxAffordable(st, b, want))
+	if n < 1 then return false, "no_money" end
+	local cost = Shared.bulkCost(st, b, n)
+	if not Shared.canPay(st, cost) then return false, "no_money" end
+	Shared.pay(st, cost)
+	st.counts[id] = (st.counts[id] or 0) + n
+	st.stats.built = st.stats.built + n
+	return true, n
+end
+
+function Shared.evolve(st)
+	local cost = Shared.eraCost(st)
+	if not cost then return false, "max" end
+	if not Shared.canPay(st, cost) then return false, "no_money" end
+	Shared.pay(st, cost)
+	st.era = st.era + 1
+	st.stats.evolves = st.stats.evolves + 1
+	st.stats.maxEra = math.max(st.stats.maxEra, st.era)
+	return true
+end
+
+function Shared.prestige(st)
+	local info = Shared.prestigeInfo(st)
+	if not info.ready then return false, "not_ready" end
+	st.gems = st.gems + info.gems
+	st.ppr = st.ppr + 1
+	st.era = 0
+	st.counts = {}
+	for _, k in ipairs(Shared.RES_ORDER) do st.res[k] = Shared.START[k] or 0 end
+	local starter = Shared.perk(st, "starter_pack") * 300
+	st.res.solar = st.res.solar + starter
+	st.res.water = st.res.water + starter
+	st.res.air = st.res.air + starter
+	return true, info.gems
+end
+
+function Shared.buyPerk(st, id)
+	local p = Shared.PERK_BY_ID[id]
+	if not p then return false, "unknown" end
+	local lvl = Shared.ppk(st, id)
+	if lvl >= p.max then return false, "max" end
+	local c = Shared.perkCost(p, lvl)
+	if st.gems < c then return false, "no_money" end
+	st.gems = st.gems - c
+	st.ppk[id] = lvl + 1
+	return true
+end
+
+function Shared.buyGlobal(st, id)
+	local p = Shared.GLOBAL_BY_ID[id]
+	if not p then return false, "unknown" end
+	local lvl = Shared.perk(st, id)
+	if lvl >= p.max then return false, "max" end
+	local c = Shared.perkCost(p, lvl)
+	if st.gems < c then return false, "no_money" end
+	st.gems = st.gems - c
+	st.perks[id] = lvl + 1
+	return true
+end
+
+-- Награда за астероид: кристаллы и запас ресурса тапа
+function Shared.asteroidReward(st, golden)
+	local gems = (1 + math.floor(st.era / 3)) * (golden and 3 or 1)
+	local bonus = math.max(Shared.clickGain(st, false) * 40, math.ceil(Shared.rates(st, false).solar * 45))
+	return gems, bonus
+end
+function Shared.asteroidHp(st, golden) return Shared.clickGain(st, false) * (golden and 18 or 14) end
+
+-- ============================================================
+--  Текст
+-- ============================================================
+local function fixed(x, d) return string.format("%." .. d .. "f", x) end
+function Shared.fmt(n)
+	if not finite(n) then return "0" end
+	if n >= 1e21 then return (string.gsub(string.format("%.2e", n), "e%+0*", "e")) end
+	if n >= 1e18 then return fixed(n / 1e18, 2) .. "Qi" end
+	if n >= 1e15 then return fixed(n / 1e15, 2) .. "Q" end
+	if n >= 1e12 then return fixed(n / 1e12, 2) .. "T" end
+	if n >= 1e9 then return fixed(n / 1e9, 2) .. "B" end
+	if n >= 1e6 then return fixed(n / 1e6, 2) .. "M" end
+	if n >= 1e3 then return fixed(n / 1e3, 1) .. "K" end
+	return tostring(math.floor(n))
+end
+function Shared.fmtRate(x)
+	if x >= 1000 then return Shared.fmt(x) end
+	if x >= 100 then return tostring(math.floor(x + 0.5)) end
+	return fixed(x, 1)
+end
+function Shared.costText(cost)
+	local parts = {}
+	for _, k in ipairs(Shared.RES_ORDER) do
+		if cost[k] then table.insert(parts, Shared.RES[k].icon .. " " .. Shared.fmt(cost[k])) end
+	end
+	if cost.gems then table.insert(parts, "💎 " .. Shared.fmt(cost.gems)) end
+	return table.concat(parts, "  ")
+end
+function Shared.plural(n, one, few, many)
+	local a = math.abs(n) % 100
+	local b = a % 10
+	if a > 10 and a < 20 then return many end
+	if b == 1 then return one end
+	if b > 1 and b < 5 then return few end
+	return many
+end
+
+return Shared
+]]></ProtectedString>
+			</Properties>
+		</Item>
+	</Item>
+	<Item class="ServerScriptService" referent="RBX00000004">
+		<Properties>
+			<string name="Name">ServerScriptService</string>
+		</Properties>
+		<Item class="Script" referent="RBX00000005">
+			<Properties>
+				<string name="Name">TerraServer</string>
+				<ProtectedString name="Source"><![CDATA[-- Terra 3D для Roblox — сервер: прогресс игроков, экономика, сохранения, астероиды, топ.
+-- Сервер решает всё сам (клиент только просит), поэтому накрутить ресурсы с клиента нельзя.
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local DataStoreService = game:GetService("DataStoreService")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+
+local Shared = require(ReplicatedStorage:WaitForChild("TerraShared"))
+local Builder = require(script.Parent:WaitForChild("PlanetBuilder"))
+
+Players.CharacterAutoLoads = false   -- без аватаров: только планеты в космосе
+
+-- ---------- космос ----------
+Lighting.ClockTime = 0
+Lighting.Brightness = 2
+Lighting.Ambient = Color3.fromRGB(120, 125, 150)
+Lighting.OutdoorAmbient = Color3.fromRGB(120, 125, 150)
+Lighting.GlobalShadows = false
+Lighting.FogEnd = 100000
+if not Lighting:FindFirstChildOfClass("Sky") then
+	local sky = Instance.new("Sky")
+	sky.StarCount = 5000
+	sky.CelestialBodiesShown = false
+	sky.Parent = Lighting
+end
+
+local planetsFolder = Instance.new("Folder")
+planetsFolder.Name = "Planets"
+planetsFolder.Parent = workspace
+local asteroidsFolder = Instance.new("Folder")
+asteroidsFolder.Name = "Asteroids"
+asteroidsFolder.Parent = workspace
+
+-- Солнце в центре — для красоты
+local sun = Instance.new("Part")
+sun.Name = "Sun"
+sun.Shape = Enum.PartType.Ball
+sun.Size = Vector3.new(60, 60, 60)
+sun.Anchored = true
+sun.CanCollide = false
+sun.CanQuery = false
+sun.Material = Enum.Material.Neon
+sun.Color = Color3.fromRGB(253, 186, 116)
+sun.Position = Vector3.new(0, 0, 0)
+sun.Parent = workspace
+
+-- ---------- сеть ----------
+local remotes = Instance.new("Folder")
+remotes.Name = "TerraRemotes"
+local Action = Instance.new("RemoteEvent"); Action.Name = "Action"; Action.Parent = remotes
+local Sync = Instance.new("RemoteEvent"); Sync.Name = "Sync"; Sync.Parent = remotes
+local Fx = Instance.new("RemoteEvent"); Fx.Name = "Fx"; Fx.Parent = remotes
+local Top = Instance.new("RemoteEvent"); Top.Name = "Top"; Top.Parent = remotes
+remotes.Parent = ReplicatedStorage
+
+-- ---------- сохранения ----------
+local store, scoreStore
+local saveOk = pcall(function()
+	store = DataStoreService:GetDataStore("TerraRoblox_v1")
+	scoreStore = DataStoreService:GetOrderedDataStore("TerraRoblox_Score_v1")
+end)
+
+local autoAcc = {}       -- накопленные выстрелы автокликера
+local sessions = {}      -- [player] = { st, slot, model, dirty, bucket, asteroid, nextAsteroid, ... }
+local SLOTS = 24
+local SLOT_RADIUS = 170
+local usedSlots = {}
+
+local function slotCenter(i)
+	local a = (i - 1) / SLOTS * 2 * math.pi
+	return Vector3.new(math.cos(a) * SLOT_RADIUS, ((i % 3) - 1) * 14, math.sin(a) * SLOT_RADIUS)
+end
+local function takeSlot()
+	for i = 1, SLOTS do
+		if not usedSlots[i] then usedSlots[i] = true; return i end
+	end
+	return math.random(1, SLOTS)
+end
+
+local function snapshot(s)
+	local st = s.st
+	return {
+		era = st.era, res = st.res, counts = st.counts, gems = st.gems, ppr = st.ppr,
+		perks = st.perks, ppk = st.ppk, stats = st.stats,
+		slot = s.slot, center = s.center, noSave = s.noSave, t = workspace:GetServerTimeNow(),
+	}
+end
+local function push(player)
+	local s = sessions[player]
+	if s then Sync:FireClient(player, snapshot(s)) end
+end
+
+local function updateStats(player)
+	local s = sessions[player]
+	if not s then return end
+	local ls = player:FindFirstChild("leaderstats")
+	if ls then
+		ls["Эпоха"].Value = s.st.era + 1
+		ls["Престиж"].Value = s.st.ppr
+	end
+end
+
+local function rebuild(player)
+	local s = sessions[player]
+	if not s then return end
+	if s.model then s.model:Destroy() end
+	s.model = Builder.build(player.UserId, player.DisplayName, s.st, s.center)
+	s.model.Parent = planetsFolder
+	s.builtKey = nil
+end
+-- планету перестраиваем, только если изменился её вид (эпоха, престиж или набор построек)
+local function lookKey(st)
+	local ids = {}
+	for _, b in ipairs(Shared.BUILDINGS) do
+		if (st.counts[b.id] or 0) > 0 then table.insert(ids, b.id) end
+	end
+	return st.era .. "|" .. st.ppr .. "|" .. table.concat(ids, ",")
+end
+local function refreshLook(player)
+	local s = sessions[player]
+	if not s then return end
+	local key = lookKey(s.st)
+	if key ~= s.lookKey then
+		s.lookKey = key
+		rebuild(player)
+	end
+end
+
+local function save(player, final)
+	local s = sessions[player]
+	if not s or s.noSave or not s.loaded then return end
+	s.st.lastSave = os.time()
+	local data = s.st
+	local ok, err = pcall(function()
+		store:SetAsync("p_" .. player.UserId, data)
+	end)
+	if ok then
+		s.dirty = false
+		pcall(function() scoreStore:SetAsync(tostring(player.UserId), Shared.score(s.st)) end)
+	else
+		warn("Terra: не удалось сохранить", player.UserId, err)
+	end
+	return ok
+end
+
+local function load(player)
+	if not saveOk then return nil, true end
+	local err
+	for attempt = 1, 3 do
+		local ok, res = pcall(function() return store:GetAsync("p_" .. player.UserId) end)
+		if ok then return res, false end
+		err = tostring(res)
+		-- в Studio без доступа к API или в неопубликованном месте ждать бесполезно
+		if string.find(err, "Studio", 1, true) or string.find(err, "403", 1, true) or string.find(err, "publish", 1, true) then break end
+		task.wait(1.5 * attempt)
+	end
+	warn("Terra: сохранения недоступны —", err)
+	return nil, true
+end
+
+-- ---------- астероиды ----------
+local asteroidSeq = 0
+local function scheduleAsteroid(s, first)
+	local range = first and Shared.ASTEROID_FIRST or Shared.ASTEROID_NEXT
+	s.nextAsteroid = os.clock() + range[1] + math.random() * (range[2] - range[1])
+end
+local function endAsteroid(player, destroyed)
+	local s = sessions[player]
+	if not s or not s.asteroid then return end
+	local a = s.asteroid
+	s.asteroid = nil
+	if a.part then a.part:Destroy() end
+	scheduleAsteroid(s, false)
+	if destroyed then
+		local gems, bonus = Shared.asteroidReward(s.st, a.golden)
+		s.st.gems = s.st.gems + gems
+		s.st.res.solar = s.st.res.solar + bonus
+		s.st.stats.asteroids = s.st.stats.asteroids + 1
+		if a.golden then s.st.stats.golden = s.st.stats.golden + 1 end
+		s.dirty = true
+		Fx:FireClient(player, "asteroidDone", { gems = gems, bonus = bonus, golden = a.golden })
+		push(player)
+	else
+		Fx:FireClient(player, "asteroidMiss", {})
+	end
+end
+local function spawnAsteroid(player)
+	local s = sessions[player]
+	if not s or s.asteroid then return end
+	asteroidSeq = asteroidSeq + 1
+	local golden = math.random() < Shared.GOLDEN_CHANCE
+	local hp = Shared.asteroidHp(s.st, golden)
+	-- летит из-за спины камеры игрока к планете
+	local out = Vector3.new(s.center.X, 0, s.center.Z).Unit
+	local side = Vector3.new(-out.Z, 0, out.X) * (math.random() < 0.5 and -1 or 1)
+	local from = s.center + out * 30 + side * 26 + Vector3.new(0, 18, 0)
+	local to = s.center + out * 13 + side * 3 + Vector3.new(0, 4, 0)
+	local p = Instance.new("Part")
+	p.Name = "Asteroid"
+	p.Shape = Enum.PartType.Ball
+	p.Size = golden and Vector3.new(3.4, 3.4, 3.4) or Vector3.new(3.8, 3.8, 3.8)
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanTouch = false
+	p.Material = golden and Enum.Material.Neon or Enum.Material.Slate
+	p.Color = golden and Color3.fromRGB(250, 204, 21) or Color3.fromRGB(120, 113, 108)
+	p.Position = from
+	p:SetAttribute("Id", asteroidSeq)
+	p:SetAttribute("Owner", player.UserId)
+	p:SetAttribute("Golden", golden)
+	p:SetAttribute("From", from)
+	p:SetAttribute("To", to)
+	p:SetAttribute("T0", workspace:GetServerTimeNow())
+	p:SetAttribute("Dur", Shared.ASTEROID_FLIGHT)
+	p.Parent = asteroidsFolder
+	s.asteroid = { id = asteroidSeq, hp = hp, maxHp = hp, golden = golden, part = p, deadline = os.clock() + Shared.ASTEROID_FLIGHT }
+	Fx:FireClient(player, "asteroid", { id = asteroidSeq, golden = golden, hp = hp, maxHp = hp, dur = Shared.ASTEROID_FLIGHT })
+end
+local function hitAsteroid(player, id, shots)
+	local s = sessions[player]
+	if not s or not s.asteroid or s.asteroid.id ~= id then return end
+	local a = s.asteroid
+	local g = Shared.clickGain(s.st, false)
+	for _ = 1, shots do
+		a.hp = a.hp - g * Shared.critMult(s.st, math.random())
+	end
+	if a.hp <= 0 then endAsteroid(player, true)
+	else Fx:FireClient(player, "asteroidHp", { id = id, hp = a.hp, maxHp = a.maxHp }) end
+end
+
+-- ---------- игроки ----------
+local function onJoin(player)
+	local ls = Instance.new("Folder")
+	ls.Name = "leaderstats"
+	local e = Instance.new("IntValue"); e.Name = "Эпоха"; e.Value = 1; e.Parent = ls
+	local p = Instance.new("IntValue"); p.Name = "Престиж"; p.Value = 0; p.Parent = ls
+	ls.Parent = player
+
+	local raw, noSave = load(player)
+	if not player.Parent then return end
+	local st = Shared.sanitize(raw)
+	local slot = takeSlot()
+	local s = { st = st, slot = slot, center = slotCenter(slot), noSave = noSave, loaded = true, dirty = false,
+		bucket = 30, bucketAt = os.clock(), boostUntil = 0 }
+	sessions[player] = s
+	-- доход, пока игрока не было (до 8 часов, вполсилы)
+	local offline = 0
+	if raw and st.lastSave > 0 then
+		local away = os.time() - st.lastSave
+		offline = Shared.offline(st, away)
+		if offline > 0 then
+			s.dirty = true
+			task.delay(2, function()
+				Fx:FireClient(player, "offline", { sec = math.min(away, Shared.OFFLINE_MAX_SEC), gain = offline })
+			end)
+		end
+	end
+	scheduleAsteroid(s, true)
+	refreshLook(player)
+	updateStats(player)
+	push(player)
+	if noSave and RunService:IsStudio() then
+		Fx:FireClient(player, "toast", { text = "⚠️ Сохранения выключены: в Studio включите Game Settings → Security → Enable Studio Access to API Services" })
+	elseif noSave then
+		Fx:FireClient(player, "toast", { text = "⚠️ Сервер сохранений Roblox не ответил — прогресс этой игры может не сохраниться" })
+	end
+end
+
+local function onLeave(player)
+	local s = sessions[player]
+	if not s then return end
+	save(player, true)
+	if s.asteroid and s.asteroid.part then s.asteroid.part:Destroy() end
+	if s.model then s.model:Destroy() end
+	usedSlots[s.slot] = nil
+	sessions[player] = nil
+	autoAcc[player] = nil
+end
+
+Players.PlayerAdded:Connect(onJoin)
+Players.PlayerRemoving:Connect(onLeave)
+for _, pl in ipairs(Players:GetPlayers()) do task.spawn(onJoin, pl) end
+
+game:BindToClose(function()
+	local left = 0
+	for pl in pairs(sessions) do
+		left = left + 1
+		task.spawn(function() save(pl, true); left = left - 1 end)
+	end
+	local t0 = os.clock()
+	while left > 0 and os.clock() - t0 < 20 do task.wait(0.2) end
+end)
+
+-- ---------- действия игрока ----------
+local MODES = { [1] = 1, [10] = 10, [50] = 50, [100] = 100, max = "max" }
+Action.OnServerEvent:Connect(function(player, kind, a, b)
+	local s = sessions[player]
+	if not s or type(kind) ~= "string" then return end
+	local st = s.st
+	if kind == "tap" then
+		-- не больше ~15 тапов в секунду (с запасом 30) — быстрее человек не тапает
+		local now = os.clock()
+		s.bucket = math.min(30, s.bucket + (now - s.bucketAt) * 15)
+		s.bucketAt = now
+		local n = math.floor(tonumber(a) or 0)
+		n = math.min(n, math.floor(s.bucket))
+		if n <= 0 then return end
+		s.bucket = s.bucket - n
+		local rolls = {}
+		for i = 1, n do rolls[i] = math.random() end
+		Shared.tap(st, n, rolls)
+		s.dirty = true
+	elseif kind == "hit" then
+		local now = os.clock()
+		s.bucket = math.min(30, s.bucket + (now - s.bucketAt) * 15)
+		s.bucketAt = now
+		local n = math.min(math.floor(tonumber(b) or 0), math.floor(s.bucket))
+		if n <= 0 then return end
+		s.bucket = s.bucket - n
+		hitAsteroid(player, tonumber(a), n)
+	elseif kind == "buy" then
+		local mode = MODES[b] or 1
+		local ok, res = Shared.buy(st, tostring(a), mode)
+		if ok then
+			s.dirty = true
+			refreshLook(player)
+			Fx:FireClient(player, "bought", { id = a, n = res })
+		end
+		push(player)
+	elseif kind == "evolve" then
+		local ok = Shared.evolve(st)
+		if ok then
+			s.dirty = true
+			refreshLook(player)
+			updateStats(player)
+			Fx:FireClient(player, "evolve", { era = st.era })
+			task.spawn(save, player)
+		end
+		push(player)
+	elseif kind == "prestige" then
+		local ok, gems = Shared.prestige(st)
+		if ok then
+			s.dirty = true
+			endAsteroid(player, false)
+			refreshLook(player)
+			updateStats(player)
+			Fx:FireClient(player, "prestige", { n = st.ppr, gems = gems })
+			task.spawn(save, player)
+		end
+		push(player)
+	elseif kind == "perk" then
+		if Shared.buyPerk(st, tostring(a)) then s.dirty = true end
+		push(player)
+	elseif kind == "gperk" then
+		if Shared.buyGlobal(st, tostring(a)) then s.dirty = true end
+		push(player)
+	end
+end)
+
+-- ---------- игровой цикл: доход, автокликер, астероиды ----------
+local last = os.clock()
+task.spawn(function()
+	while true do
+		task.wait(1)
+		local now = os.clock()
+		local dt = math.min(5, now - last)
+		last = now
+		for player, s in pairs(sessions) do
+			local st = s.st
+			Shared.tick(st, dt, false)
+			st.stats.playSec = st.stats.playSec + dt
+			-- автокликер: 2 выстрела в секунду за уровень — по астероиду, если он есть, иначе по планете
+			local lvl = Shared.perk(st, "autoclicker")
+			if lvl > 0 then
+				local acc = (autoAcc[player] or 0) + lvl * 2 * dt
+				local shots = math.floor(acc)
+				autoAcc[player] = acc - shots
+				if shots > 0 then
+					if s.asteroid then hitAsteroid(player, s.asteroid.id, shots)
+					else Shared.tap(st, shots, nil); st.stats.taps = st.stats.taps - shots end
+				end
+			end
+			if s.asteroid and now >= s.asteroid.deadline then endAsteroid(player, false)
+			elseif not s.asteroid and s.nextAsteroid and now >= s.nextAsteroid then spawnAsteroid(player) end
+			s.dirty = true
+			push(player)
+		end
+	end
+end)
+
+-- автосохранение раз в минуту
+task.spawn(function()
+	while true do
+		task.wait(60)
+		for player, s in pairs(sessions) do
+			if s.dirty then task.spawn(save, player) end
+		end
+	end
+end)
+
+-- мировой топ (раз в минуту)
+local nameCache = {}
+local function nameOf(userId)
+	if nameCache[userId] then return nameCache[userId] end
+	local ok, name = pcall(function() return Players:GetNameFromUserIdAsync(userId) end)
+	if ok and name then nameCache[userId] = name; return name end
+	return "Игрок " .. userId
+end
+local lastTop = {}
+local function refreshTop()
+	if not saveOk then return end
+	local ok, pages = pcall(function() return scoreStore:GetSortedAsync(false, 20) end)
+	if not ok or not pages then return end
+	local list = {}
+	for rank, item in ipairs(pages:GetCurrentPage()) do
+		local id = tonumber(item.key)
+		table.insert(list, { rank = rank, name = id and nameOf(id) or tostring(item.key), score = item.value, me = id })
+	end
+	lastTop = list
+	Top:FireAllClients(list)
+end
+task.spawn(function()
+	task.wait(5)
+	while true do
+		refreshTop()
+		task.wait(60)
+	end
+end)
+Players.PlayerAdded:Connect(function(player)
+	task.wait(3)
+	if player.Parent then Top:FireClient(player, lastTop) end
+end)
+]]></ProtectedString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX00000006">
+			<Properties>
+				<string name="Name">PlanetBuilder</string>
+				<ProtectedString name="Source"><![CDATA[-- Строит 3D-планету игрока по его эпохе и постройкам (сервер, видят все игроки).
+-- Структура модели (клиент вращает части по именам):
+--   Spin   — шар, материки, огни, значки построек (вращается вокруг оси)
+--   Clouds — облака (вращаются чуть быстрее)
+--   Orbit  — луна, спутники, рой Дайсона, врата (вращаются по орбите)
+--   Static — атмосфера, сияние, кольцо, луч маяка, табличка с ником
+local Shared = require(game:GetService("ReplicatedStorage"):WaitForChild("TerraShared"))
+
+local Builder = {}
+Builder.RADIUS = 12
+
+local function rgb(t) return Color3.fromRGB(t[1], t[2], t[3]) end
+
+local function ball(parent, name, cf, diameter, color, material, transparency)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Shape = Enum.PartType.Ball
+	p.Size = Vector3.new(diameter, diameter, diameter)
+	p.CFrame = cf
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Material = material or Enum.Material.SmoothPlastic
+	p.Color = color
+	p.Transparency = transparency or 0
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Parent = parent
+	return p
+end
+
+local function block(parent, name, cf, size, color, material, transparency)
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Size = size
+	p.CFrame = cf
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanTouch = false
+	p.CastShadow = false
+	p.Material = material or Enum.Material.SmoothPlastic
+	p.Color = color
+	p.Transparency = transparency or 0
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Parent = parent
+	return p
+end
+
+-- Точки на сфере, равномерно (золотой угол); seed сдвигает узор
+local function sphereDir(i, n, seed)
+	local y = 1 - 2 * (i - 0.5) / n
+	local r = math.sqrt(math.max(0, 1 - y * y))
+	local phi = i * 2.399963 + seed
+	return Vector3.new(math.cos(phi) * r, y, math.sin(phi) * r)
+end
+
+-- Пятно на поверхности: шар, который выступает над планетой на h
+local function patch(parent, center, R, dir, r, h, color, material, transparency)
+	return ball(parent, "Patch", CFrame.new(center + dir.Unit * (R + h - r)), r * 2, color, material, transparency)
+end
+
+-- Кольцо из отрезков в плоскости XZ локальной системы cf
+local function ring(parent, cf, radius, count, width, thickness, color, material, transparency)
+	local seg = 2 * math.pi * radius / count * 1.08
+	for i = 1, count do
+		local a = (i / count) * 2 * math.pi
+		local p = Vector3.new(math.cos(a) * radius, 0, math.sin(a) * radius)
+		local t = Vector3.new(-math.sin(a), 0, math.cos(a))
+		block(parent, "Ring", cf * CFrame.lookAt(p, p + t), Vector3.new(width, thickness, seg), color, material, transparency)
+	end
+end
+
+-- Как выглядит Земля в каждой эпохе
+local LOOK = {
+	[0] = { base = { 205, 82, 30 }, mat = Enum.Material.CrackedLava, patches = { { { 58, 30, 24 }, Enum.Material.Basalt, 9 } }, clouds = 0, atmo = nil },
+	[1] = { base = { 22, 78, 170 }, mat = Enum.Material.Glass, patches = { { { 92, 64, 51 }, Enum.Material.Basalt, 6 } }, clouds = 4, cloud = { 160, 160, 170 }, atmo = { 56, 189, 248 } },
+	[2] = { base = { 25, 95, 190 }, mat = Enum.Material.Glass, patches = { { { 110, 80, 60 }, Enum.Material.Rock, 6 } }, clouds = 9, atmo = { 125, 211, 252 } },
+	[3] = { base = { 25, 105, 185 }, mat = Enum.Material.Glass, patches = { { { 110, 80, 60 }, Enum.Material.Rock, 6 }, { { 45, 212, 191 }, Enum.Material.SmoothPlastic, 7, 0.35 } }, clouds = 9, atmo = { 125, 211, 252 } },
+	[4] = { base = { 30, 110, 200 }, mat = Enum.Material.Glass, patches = { { { 76, 175, 80 }, Enum.Material.Grass, 8 } }, clouds = 10, atmo = { 147, 197, 253 } },
+	[5] = { base = { 30, 110, 200 }, mat = Enum.Material.Glass, patches = { { { 54, 140, 60 }, Enum.Material.Grass, 8 }, { { 22, 101, 52 }, Enum.Material.LeafyGrass, 10 } }, clouds = 10, atmo = { 147, 197, 253 } },
+	[6] = { base = { 30, 110, 200 }, mat = Enum.Material.Glass, patches = { { { 76, 160, 70 }, Enum.Material.Grass, 8 }, { { 161, 98, 7 }, Enum.Material.Sand, 6 } }, clouds = 10, atmo = { 147, 197, 253 } },
+	[7] = { base = { 35, 100, 180 }, mat = Enum.Material.Glass, patches = { { { 76, 150, 70 }, Enum.Material.Grass, 8 }, { { 120, 120, 125 }, Enum.Material.Concrete, 8 } }, clouds = 10, cloud = { 190, 180, 160 }, atmo = { 203, 213, 225 } },
+}
+local function lookFor(era)
+	if era <= 7 then return LOOK[era] end
+	return { base = { 30, 105, 200 }, mat = Enum.Material.Glass, patches = { { { 70, 160, 80 }, Enum.Material.Grass, 8 }, { { 148, 163, 184 }, Enum.Material.Concrete, 7 } }, clouds = 9, atmo = { 165, 180, 252 } }
+end
+
+function Builder.build(userId, displayName, st, center)
+	local R = Builder.RADIUS
+	local era = st.era
+	local E = Shared.ERAS[era + 1]
+	local L = lookFor(era)
+	local halo = rgb(E.halo)
+	local seed = (userId % 997) / 97
+
+	local model = Instance.new("Model")
+	model.Name = "Planet_" .. userId
+	model:SetAttribute("Owner", userId)
+	model:SetAttribute("Era", era)
+	local spin = Instance.new("Model"); spin.Name = "Spin"; spin.Parent = model
+	local clouds = Instance.new("Model"); clouds.Name = "Clouds"; clouds.Parent = model
+	local orbit = Instance.new("Model"); orbit.Name = "Orbit"; orbit.Parent = model
+	local static = Instance.new("Model"); static.Name = "Static"; static.Parent = model
+
+	-- шар и поверхность
+	local core = ball(spin, "Core", CFrame.new(center), R * 2, rgb(L.base), L.mat)
+	if L.mat == Enum.Material.Glass then core.Reflectance = 0.08 end
+	local k = 0
+	for gi, grp in ipairs(L.patches) do
+		local n = grp[3]
+		for i = 1, n do
+			k = k + 1
+			local dir = sphereDir(i, n, seed + gi * 1.7)
+			local r = R * (0.32 + ((i * 37 + gi * 11) % 10) / 45)
+			patch(spin, center, R, dir, r, R * 0.035, rgb(grp[1]), grp[2], grp[4] or 0)
+		end
+	end
+	-- огни городов и сеть ИИ
+	if era >= 9 then
+		for i = 1, 36 do
+			local dir = sphereDir(i, 36, seed + 0.9)
+			ball(spin, "Light", CFrame.new(center + dir * (R * 1.04)), 0.45, Color3.fromRGB(253, 224, 71), Enum.Material.Neon)
+		end
+	end
+	if era >= 11 then
+		for i = 1, 24 do
+			local dir = sphereDir(i, 24, seed + 2.3)
+			ball(spin, "Node", CFrame.new(center + dir * (R * 1.05)), 0.55, Color3.fromRGB(34, 211, 238), Enum.Material.Neon)
+		end
+	end
+	-- значки построек
+	local nb = #Shared.BUILDINGS
+	for i, b in ipairs(Shared.BUILDINGS) do
+		if (st.counts[b.id] or 0) > 0 then
+			local dir = sphereDir(i, nb, seed + 4.1)
+			local anchor = block(spin, "Marker", CFrame.new(center + dir * (R * 1.06)), Vector3.new(0.2, 0.2, 0.2), Color3.new(1, 1, 1), Enum.Material.SmoothPlastic, 1)
+			anchor.CanQuery = false
+			local gui = Instance.new("BillboardGui")
+			gui.Size = UDim2.new(3.4, 0, 3.4, 0)
+			gui.LightInfluence = 0
+			gui.MaxDistance = 140
+			gui.Parent = anchor
+			local t = Instance.new("TextLabel")
+			t.BackgroundTransparency = 1
+			t.Size = UDim2.new(1, 0, 1, 0)
+			t.Text = b.icon
+			t.TextScaled = true
+			t.Font = Enum.Font.GothamBold
+			t.TextColor3 = Color3.new(1, 1, 1)
+			t.Parent = gui
+		end
+	end
+
+	-- облака
+	for i = 1, L.clouds do
+		local dir = sphereDir(i, L.clouds, seed + 3.3)
+		dir = Vector3.new(dir.X, dir.Y * 0.8, dir.Z)
+		local r = R * (0.2 + (i % 4) * 0.04)
+		patch(clouds, center, R, dir, r, R * 0.1, rgb(L.cloud or { 255, 255, 255 }), Enum.Material.SmoothPlastic, 0.2)
+	end
+
+	-- атмосфера и сияние эпохи
+	if L.atmo then
+		local a = ball(static, "Atmosphere", CFrame.new(center), R * 2.14, rgb(L.atmo), Enum.Material.Neon, 0.88)
+		a.CanQuery = false
+	end
+	local glow = ball(static, "Glow", CFrame.new(center), R * 2.45, halo, Enum.Material.Neon, 0.94)
+	glow.CanQuery = false
+	local light = Instance.new("PointLight")
+	light.Color = halo
+	light.Brightness = 1.5
+	light.Range = 40
+	light.Parent = glow
+
+	-- луна
+	local moon = ball(orbit, "Moon", CFrame.new(center + Vector3.new(R * 2.6, R * 0.25, 0)), R * 0.36, Color3.fromRGB(190, 190, 196), Enum.Material.Slate)
+	moon.CanQuery = false
+	-- спутники
+	if era >= 8 then
+		for i = 1, 3 do
+			local a = i * 2.1
+			local p = center + Vector3.new(math.cos(a) * R * 1.55, (i - 2) * R * 0.35, math.sin(a) * R * 1.55)
+			local body = block(orbit, "Satellite", CFrame.new(p), Vector3.new(0.9, 0.9, 0.9), Color3.fromRGB(226, 232, 240), Enum.Material.Metal)
+			body.CanQuery = false
+			local panel = block(orbit, "Panel", CFrame.new(p), Vector3.new(3.2, 0.12, 0.9), Color3.fromRGB(59, 130, 246), Enum.Material.Glass)
+			panel.CanQuery = false
+		end
+	end
+	-- рой Дайсона
+	if era >= 9 then
+		for i = 1, 18 do
+			local dir = sphereDir(i, 18, seed + 5.5)
+			local p = block(orbit, "Swarm", CFrame.new(center + dir * (R * 1.9)), Vector3.new(0.7, 0.08, 0.7), Color3.fromRGB(250, 204, 21), Enum.Material.Neon)
+			p.CanQuery = false
+		end
+	end
+	-- орбитальное кольцо
+	if era >= 10 then
+		ring(static, CFrame.new(center) * CFrame.Angles(math.rad(14), 0, math.rad(6)), R * 1.75, 56, R * 0.22, 0.18, Color3.fromRGB(148, 163, 184), Enum.Material.Metal, 0)
+	end
+	-- звёздные врата
+	if era >= 12 then
+		local gcf = CFrame.new(center + Vector3.new(-R * 2.7, R * 0.9, 0)) * CFrame.Angles(math.pi / 2, 0, math.rad(25))
+		ring(orbit, gcf, R * 0.55, 28, 0.6, 0.6, Color3.fromRGB(167, 139, 250), Enum.Material.Neon, 0)
+	end
+	-- вторая аура держав
+	if era >= 13 then
+		local g2 = ball(static, "Glow2", CFrame.new(center), R * 2.9, Color3.fromRGB(244, 114, 182), Enum.Material.Neon, 0.96)
+		g2.CanQuery = false
+	end
+	-- галактический маяк
+	if era >= 14 then
+		local beam = block(static, "Beacon", CFrame.new(center + Vector3.new(0, R + 32, 0)) * CFrame.Angles(0, 0, math.pi / 2), Vector3.new(64, 1.4, 1.4), Color3.fromRGB(254, 240, 138), Enum.Material.Neon, 0.3)
+		beam.Shape = Enum.PartType.Cylinder
+		beam.CanQuery = false
+	end
+
+	-- табличка с ником (своему игроку клиент её скрывает)
+	local tagPart = block(static, "Tag", CFrame.new(center + Vector3.new(0, R * 1.55, 0)), Vector3.new(0.2, 0.2, 0.2), Color3.new(1, 1, 1), Enum.Material.SmoothPlastic, 1)
+	tagPart.CanQuery = false
+	local tag = Instance.new("BillboardGui")
+	tag.Name = "NameTag"
+	tag.Size = UDim2.new(0, 220, 0, 46)
+	tag.StudsOffset = Vector3.new(0, 2, 0)
+	tag.AlwaysOnTop = true
+	tag.LightInfluence = 0
+	tag.MaxDistance = 600
+	tag.Parent = tagPart
+	local name = Instance.new("TextLabel")
+	name.BackgroundTransparency = 1
+	name.Size = UDim2.new(1, 0, 0.55, 0)
+	name.Text = displayName
+	name.TextScaled = true
+	name.Font = Enum.Font.GothamBold
+	name.TextColor3 = Color3.new(1, 1, 1)
+	name.TextStrokeTransparency = 0.5
+	name.Parent = tag
+	local sub = Instance.new("TextLabel")
+	sub.BackgroundTransparency = 1
+	sub.Position = UDim2.new(0, 0, 0.55, 0)
+	sub.Size = UDim2.new(1, 0, 0.45, 0)
+	sub.Text = "Эпоха " .. (era + 1) .. (st.ppr > 0 and ("  ·  🌀 " .. st.ppr) or "")
+	sub.TextScaled = true
+	sub.Font = Enum.Font.Gotham
+	sub.TextColor3 = rgb(E.halo)
+	sub.TextStrokeTransparency = 0.6
+	sub.Parent = tag
+
+	for _, m in ipairs({ spin, clouds, orbit, static }) do m.WorldPivot = CFrame.new(center) end
+	model.WorldPivot = CFrame.new(center)
+	return model
+end
+
+return Builder
+]]></ProtectedString>
+			</Properties>
+		</Item>
+	</Item>
+	<Item class="StarterPlayer" referent="RBX00000007">
+		<Properties>
+			<string name="Name">StarterPlayer</string>
+		</Properties>
+		<Item class="StarterPlayerScripts" referent="RBX00000008">
+			<Properties>
+				<string name="Name">StarterPlayerScripts</string>
+			</Properties>
+			<Item class="LocalScript" referent="RBX00000009">
+				<Properties>
+					<string name="Name">TerraClient</string>
+					<ProtectedString name="Source"><![CDATA[-- Terra 3D для Roblox — клиент: камера, тапы, анимация планет и весь интерфейс.
+-- Клиент только показывает и просит сервер; все расчёты делает сервер (TerraServer).
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local GuiService = game:GetService("GuiService")
+
+local player = Players.LocalPlayer
+local Shared = require(ReplicatedStorage:WaitForChild("TerraShared"))
+local remotes = ReplicatedStorage:WaitForChild("TerraRemotes")
+local Action = remotes:WaitForChild("Action")
+local Sync = remotes:WaitForChild("Sync")
+local Fx = remotes:WaitForChild("Fx")
+local Top = remotes:WaitForChild("Top")
+local camera = workspace.CurrentCamera
+local planetsFolder = workspace:WaitForChild("Planets")
+local asteroidsFolder = workspace:WaitForChild("Asteroids")
+
+-- ============================================================
+--  Оформление
+-- ============================================================
+local C = {
+	panel = Color3.fromRGB(12, 18, 40),
+	card = Color3.fromRGB(24, 32, 64),
+	card2 = Color3.fromRGB(34, 44, 84),
+	stroke = Color3.fromRGB(110, 130, 220),
+	text = Color3.fromRGB(244, 247, 255),
+	dim = Color3.fromRGB(160, 172, 214),
+	faint = Color3.fromRGB(110, 120, 160),
+	accent = Color3.fromRGB(91, 140, 255),
+	good = Color3.fromRGB(34, 197, 94),
+	bad = Color3.fromRGB(248, 113, 113),
+	gold = Color3.fromRGB(250, 204, 21),
+	violet = Color3.fromRGB(167, 139, 250),
+}
+local BOLD, MED = Enum.Font.GothamBold, Enum.Font.GothamMedium
+
+local function new(class, props, children)
+	local o = Instance.new(class)
+	local parent = props.Parent
+	props.Parent = nil
+	for k, v in pairs(props) do o[k] = v end
+	if children then
+		for _, c in ipairs(children) do c.Parent = o end
+	end
+	if parent then o.Parent = parent end
+	return o
+end
+local function corner(r) return new("UICorner", { CornerRadius = UDim.new(0, r) }) end
+local function stroke(color, th, tr) return new("UIStroke", { Color = color, Thickness = th or 1, Transparency = tr or 0.6, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }) end
+local function padding(l, t, r, b) return new("UIPadding", { PaddingLeft = UDim.new(0, l), PaddingTop = UDim.new(0, t or l), PaddingRight = UDim.new(0, r or l), PaddingBottom = UDim.new(0, b or t or l) }) end
+local function label(props)
+	props.BackgroundTransparency = 1
+	props.TextColor3 = props.TextColor3 or C.text
+	props.Font = props.Font or MED
+	props.TextSize = props.TextSize or 14
+	props.TextXAlignment = props.TextXAlignment or Enum.TextXAlignment.Left
+	return new("TextLabel", props)
+end
+local function button(props, color)
+	props.AutoButtonColor = true
+	props.BackgroundColor3 = color or C.accent
+	props.TextColor3 = props.TextColor3 or C.text
+	props.Font = props.Font or BOLD
+	props.TextSize = props.TextSize or 15
+	local b = new("TextButton", props)
+	corner(12).Parent = b
+	return b
+end
+local function rgb(t) return Color3.fromRGB(t[1], t[2], t[3]) end
+local fmt = Shared.fmt
+
+-- ============================================================
+--  Каркас интерфейса
+-- ============================================================
+local playerGui = player:WaitForChild("PlayerGui")
+-- на телефонах и планшетах — вертикальный экран, как в основной игре (планета сверху, меню снизу)
+if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then
+	playerGui.ScreenOrientation = Enum.ScreenOrientation.Portrait
+end
+local gui = new("ScreenGui", { Name = "TerraUI", ResetOnSpawn = false, IgnoreGuiInset = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Parent = playerGui })
+local root = new("Frame", { Name = "Root", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Parent = gui })
+local uiScale = new("UIScale", { Parent = root })
+local SCALE, W, H, WIDE = 1, 400, 800, false
+
+-- верхняя панель ресурсов
+local top = new("Frame", { Name = "Top", BackgroundColor3 = C.panel, BackgroundTransparency = 0.15, Size = UDim2.fromOffset(380, 54), AnchorPoint = Vector2.new(0.5, 0), Parent = root }, { corner(16), stroke(C.stroke, 1, 0.7) })
+local pills = {}
+local PILL_KEYS = { "solar", "water", "air", "biomass", "science", "gems" }
+for i, k in ipairs(PILL_KEYS) do
+	local R = Shared.RES[k]
+	local f = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1 / 6, 0, 1, 0), Position = UDim2.new((i - 1) / 6, 0, 0, 0), Parent = top })
+	label({ Text = R.icon, TextSize = 18, Size = UDim2.new(0, 22, 1, 0), Position = UDim2.fromOffset(4, 0), TextXAlignment = Enum.TextXAlignment.Center, Parent = f })
+	local v = label({ Text = "0", Font = BOLD, TextSize = 14, Size = UDim2.new(1, -28, 0, 20), Position = UDim2.fromOffset(27, 8), TextTruncate = Enum.TextTruncate.AtEnd, Parent = f })
+	local r = label({ Text = R.name, TextSize = 10, TextColor3 = C.dim, Size = UDim2.new(1, -28, 0, 14), Position = UDim2.fromOffset(27, 28), TextTruncate = Enum.TextTruncate.AtEnd, Parent = f })
+	pills[k] = { value = v, rate = r }
+end
+local info = label({ Name = "Info", Text = "", TextSize = 13, TextColor3 = C.dim, AnchorPoint = Vector2.new(0.5, 0), TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.fromOffset(380, 18), Parent = root })
+local warnLabel = label({ Name = "Warn", Text = "", TextSize = 12, TextColor3 = C.bad, AnchorPoint = Vector2.new(0.5, 0), TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true, Size = UDim2.fromOffset(380, 30), Visible = false, Parent = root })
+
+-- баннер астероида
+local banner = new("Frame", { Name = "Asteroid", BackgroundColor3 = Color3.fromRGB(120, 30, 20), BackgroundTransparency = 0.1, AnchorPoint = Vector2.new(0.5, 0), Size = UDim2.fromOffset(300, 46), Visible = false, Parent = root }, { corner(14), stroke(Color3.fromRGB(251, 146, 60), 1.5, 0.2) })
+local bannerText = label({ Text = "☄️ АСТЕРОИД! ЖМИ НА НЕГО!", Font = BOLD, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, 0, 0, 24), Position = UDim2.fromOffset(0, 4), Parent = banner })
+local bannerBarBg = new("Frame", { BackgroundColor3 = Color3.fromRGB(40, 10, 8), Size = UDim2.new(1, -24, 0, 8), Position = UDim2.fromOffset(12, 31), Parent = banner }, { corner(4) })
+local bannerBar = new("Frame", { BackgroundColor3 = Color3.fromRGB(251, 146, 60), Size = UDim2.fromScale(1, 1), Parent = bannerBarBg }, { corner(4) })
+
+-- карточка эпохи
+local eraCard = new("Frame", { Name = "Era", BackgroundColor3 = C.panel, BackgroundTransparency = 0.12, AnchorPoint = Vector2.new(0.5, 1), Size = UDim2.fromOffset(380, 92), Parent = root }, { corner(16), stroke(C.stroke, 1, 0.65) })
+local eraKicker = label({ Text = "ЭПОХА 1", Font = BOLD, TextSize = 11, TextColor3 = Color3.fromRGB(20, 20, 30), TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.fromOffset(74, 18), Position = UDim2.fromOffset(12, 10), BackgroundTransparency = 0, Parent = eraCard })
+eraKicker.BackgroundTransparency = 0
+eraKicker.BackgroundColor3 = C.gold
+corner(9).Parent = eraKicker
+local eraName = label({ Text = "Протопланета", Font = BOLD, TextSize = 17, Size = UDim2.new(1, -230, 0, 20), Position = UDim2.fromOffset(94, 9), TextTruncate = Enum.TextTruncate.AtEnd, Parent = eraCard })
+local eraNext = label({ Text = "", TextSize = 12, TextColor3 = C.dim, Size = UDim2.new(1, -150, 0, 32), Position = UDim2.fromOffset(12, 32), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, Parent = eraCard })
+local eraBarBg = new("Frame", { BackgroundColor3 = Color3.fromRGB(30, 38, 70), Size = UDim2.new(1, -24, 0, 7), Position = UDim2.new(0, 12, 1, -16), Parent = eraCard }, { corner(4) })
+local eraBar = new("Frame", { BackgroundColor3 = C.good, Size = UDim2.fromScale(0, 1), Parent = eraBarBg }, { corner(4) })
+local evolveBtn = button({ Text = "Эволюция", Size = UDim2.fromOffset(124, 44), AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 12) }, C.card2)
+evolveBtn.Parent = eraCard
+
+-- меню вкладок
+local tabsBar = new("Frame", { Name = "Tabs", BackgroundColor3 = C.panel, BackgroundTransparency = 0.12, AnchorPoint = Vector2.new(0.5, 1), Size = UDim2.fromOffset(380, 60), Parent = root }, { corner(18), stroke(C.stroke, 1, 0.65) })
+local TABS = {
+	{ id = "build", icon = "🏗️", label = "Постройки" },
+	{ id = "perks", icon = "🌳", label = "Улучшения" },
+	{ id = "prestige", icon = "🌀", label = "Престиж" },
+	{ id = "top", icon = "🏆", label = "Топ" },
+}
+local tabButtons = {}
+for i, t in ipairs(TABS) do
+	local b = new("TextButton", { Name = t.id, Text = "", AutoButtonColor = false, BackgroundColor3 = C.accent, BackgroundTransparency = 1, Size = UDim2.new(0.25, -6, 1, -8), Position = UDim2.new((i - 1) * 0.25, 3, 0, 4), Parent = tabsBar }, { corner(14) })
+	label({ Text = t.icon, TextSize = 20, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, 0, 0, 26), Position = UDim2.fromOffset(0, 4), Parent = b })
+	label({ Text = t.label, Font = BOLD, TextSize = 11, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, 0, 0, 16), Position = UDim2.fromOffset(0, 32), Parent = b })
+	local dot = new("Frame", { Name = "Dot", BackgroundColor3 = C.gold, Size = UDim2.fromOffset(8, 8), Position = UDim2.new(0.5, 14, 0, 4), Visible = false, Parent = b }, { corner(4) })
+	tabButtons[t.id] = { btn = b, dot = dot }
+end
+
+-- выезжающая панель
+local sheet = new("Frame", { Name = "Sheet", BackgroundColor3 = C.panel, BackgroundTransparency = 0.04, Size = UDim2.fromOffset(380, 400), Visible = false, ClipsDescendants = true, Parent = root }, { corner(18), stroke(C.stroke, 1, 0.55) })
+local sheetTitle = label({ Text = "", Font = BOLD, TextSize = 17, Size = UDim2.new(1, -60, 0, 44), Position = UDim2.fromOffset(16, 2), Parent = sheet })
+local sheetClose = button({ Text = "✕", TextSize = 16, Size = UDim2.fromOffset(36, 36), AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -8, 0, 6) }, C.card2)
+sheetClose.Parent = sheet
+local scroll = new("ScrollingFrame", { BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(1, -12, 1, -50), Position = UDim2.fromOffset(6, 46), CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y, ScrollBarThickness = 4, ScrollBarImageColor3 = C.stroke, Parent = sheet })
+new("UIListLayout", { Padding = UDim.new(0, 7), SortOrder = Enum.SortOrder.LayoutOrder, Parent = scroll })
+padding(4, 2, 8, 12).Parent = scroll
+
+-- всплывающие сообщения и заставка новой эпохи
+local toastHolder = new("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0), Size = UDim2.fromOffset(360, 200), Parent = root })
+new("UIListLayout", { Padding = UDim.new(0, 6), HorizontalAlignment = Enum.HorizontalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder, Parent = toastHolder })
+local cinema = new("Frame", { Name = "Cinema", BackgroundColor3 = Color3.fromRGB(5, 8, 20), BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Visible = false, ZIndex = 50, Parent = root })
+local cineKicker = label({ Text = "", Font = BOLD, TextSize = 14, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Center, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.36, 0), Size = UDim2.fromOffset(360, 20), ZIndex = 51, Parent = cinema })
+local cineBig = label({ Text = "", Font = BOLD, TextSize = 72, TextXAlignment = Enum.TextXAlignment.Center, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.45, 0), Size = UDim2.fromOffset(360, 80), ZIndex = 51, Parent = cinema })
+local cineTitle = label({ Text = "", Font = BOLD, TextSize = 26, TextXAlignment = Enum.TextXAlignment.Center, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.54, 0), Size = UDim2.fromOffset(380, 32), ZIndex = 51, Parent = cinema })
+local cineDesc = label({ Text = "", TextSize = 15, TextColor3 = C.dim, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Center, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0.59, 0), Size = UDim2.fromOffset(340, 60), ZIndex = 51, Parent = cinema })
+
+local function toast(text, color)
+	local f = new("Frame", { BackgroundColor3 = C.card, BackgroundTransparency = 0.05, Size = UDim2.fromOffset(340, 0), AutomaticSize = Enum.AutomaticSize.Y, Parent = toastHolder }, { corner(12), stroke(color or C.stroke, 1, 0.4), padding(12, 8) })
+	local t = label({ Text = text, TextSize = 13, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, Parent = f })
+	task.delay(3.6, function()
+		local ti = TweenInfo.new(0.5)
+		TweenService:Create(f, ti, { BackgroundTransparency = 1 }):Play()
+		TweenService:Create(t, ti, { TextTransparency = 1 }):Play()
+		task.wait(0.55)
+		f:Destroy()
+	end)
+end
+
+local cineToken = 0
+local function showCinema(kicker, big, title, desc, color)
+	cineToken = cineToken + 1
+	local my = cineToken
+	cineKicker.Text, cineBig.Text, cineTitle.Text, cineDesc.Text = kicker, big, title, desc
+	cineBig.TextColor3 = color
+	cinema.Visible = true
+	cinema.BackgroundTransparency = 1
+	for _, l in ipairs({ cineKicker, cineBig, cineTitle, cineDesc }) do l.TextTransparency = 1 end
+	local ti = TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	TweenService:Create(cinema, ti, { BackgroundTransparency = 0.35 }):Play()
+	for _, l in ipairs({ cineKicker, cineBig, cineTitle, cineDesc }) do TweenService:Create(l, ti, { TextTransparency = 0 }):Play() end
+	task.delay(2.8, function()
+		if my ~= cineToken then return end
+		local to = TweenInfo.new(0.6)
+		TweenService:Create(cinema, to, { BackgroundTransparency = 1 }):Play()
+		for _, l in ipairs({ cineKicker, cineBig, cineTitle, cineDesc }) do TweenService:Create(l, to, { TextTransparency = 1 }):Play() end
+		task.wait(0.65)
+		if my == cineToken then cinema.Visible = false end
+	end)
+end
+cinema.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		cineToken = cineToken + 1
+		cinema.Visible = false
+	end
+end)
+
+-- ============================================================
+--  Состояние с сервера
+-- ============================================================
+local S = nil           -- последний снимок состояния
+local syncAt = 0
+local rates = {}
+local pendingTaps, sentGain = 0, 0
+local buyMode = 1
+local tab = nil
+local topList = {}
+local asteroidState = nil
+local prestigeConfirmUntil = 0
+
+local function shown(k)    -- значение ресурса с плавным приростом между обновлениями
+	if not S then return 0 end
+	if k == "gems" then return S.gems end
+	local dt = math.min(1.5, os.clock() - syncAt)
+	local v = (S.res[k] or 0) + (rates[k] or 0) * dt
+	if k == "solar" then v = v + sentGain end
+	return v
+end
+local function haveAll(cost)
+	for k, v in pairs(cost) do
+		if shown(k) < v then return false end
+	end
+	return true
+end
+
+-- ============================================================
+--  Раскладка: телефон вертикально — панель снизу; широкий экран — панель справа
+-- ============================================================
+local panelW = 400
+local function sheetOpen() return tab ~= nil end
+local function layout()
+	local vp = camera.ViewportSize
+	local inset = GuiService:GetGuiInset()
+	local vw, vh = vp.X, vp.Y - inset.Y
+	WIDE = vw > vh * 1.15
+	SCALE = math.clamp(math.min(vw / (WIDE and 900 or 410), vh / (WIDE and 640 or 780)), 0.55, 1.25)
+	uiScale.Scale = SCALE
+	W, H = vw / SCALE, vh / SCALE
+	root.Size = UDim2.fromOffset(W, H)
+
+	local leftW = W
+	if WIDE and sheetOpen() then leftW = W - panelW - 16 end
+	local cw = math.min(leftW - 16, 560)
+	local cx = leftW / 2
+	top.Size = UDim2.fromOffset(math.min(W - 16, 760), 54)
+	top.Position = UDim2.fromOffset(W / 2, 6)
+	if WIDE and sheetOpen() then
+		top.Size = UDim2.fromOffset(math.min(leftW - 16, 760), 54)
+		top.Position = UDim2.fromOffset(cx, 6)
+	end
+	info.Size = UDim2.fromOffset(cw, 18)
+	info.Position = UDim2.fromOffset(cx, 64)
+	warnLabel.Size = UDim2.fromOffset(cw, 30)
+	warnLabel.Position = UDim2.fromOffset(cx, 84)
+	banner.Position = UDim2.fromOffset(cx, 88)
+	toastHolder.Position = UDim2.fromOffset(cx, 140)
+	tabsBar.Size = UDim2.fromOffset(cw, 60)
+	tabsBar.Position = UDim2.fromOffset(cx, H - 8)
+	eraCard.Size = UDim2.fromOffset(cw, 92)
+	eraCard.Position = UDim2.fromOffset(cx, H - 76)
+	eraCard.Visible = not (sheetOpen() and not WIDE)
+	if WIDE then
+		sheet.Size = UDim2.fromOffset(panelW, H - 16)
+		sheet.Position = UDim2.fromOffset(W - panelW - 8, 8)
+	else
+		local h = math.max(240, H - 76 - 124)
+		sheet.Size = UDim2.fromOffset(cw, math.min(h, H * 0.62))
+		sheet.Position = UDim2.fromOffset(cx - cw / 2, H - 76 - math.min(h, H * 0.62))
+	end
+	sheet.Visible = sheetOpen()
+end
+
+-- где на экране должна быть планета (в пикселях экрана) и её размер
+local function planetTarget()
+	local vp = camera.ViewportSize
+	local inset = GuiService:GetGuiInset().Y
+	local topPx = inset + (WIDE and 96 or 100) * SCALE
+	local bottomPx = vp.Y - ((sheetOpen() and not WIDE) and (sheet.AbsoluteSize.Y + 76 * SCALE + 12) or (176 * SCALE))
+	local leftPx, rightPx = 0, vp.X
+	if WIDE and sheetOpen() then rightPx = vp.X - (panelW + 16) * SCALE end
+	local cx, cy = (leftPx + rightPx) / 2, (topPx + bottomPx) / 2
+	local radius = math.max(40, math.min(rightPx - leftPx, bottomPx - topPx) * 0.36)
+	return cx, cy, radius
+end
+
+-- ============================================================
+--  Камера и анимация планет
+-- ============================================================
+camera.CameraType = Enum.CameraType.Scriptable
+camera.FieldOfView = 50
+local camCF = nil
+local function myModel() return planetsFolder:FindFirstChild("Planet_" .. player.UserId) end
+
+local function cameraGoal()
+	if not S or not S.center then return nil end
+	local center = S.center
+	local out = Vector3.new(center.X, 0, center.Z)
+	out = out.Magnitude > 1 and out.Unit or Vector3.new(0, 0, 1)
+	local right = Vector3.new(0, 1, 0):Cross(out).Unit
+	local up = out:Cross(right).Unit
+	local vp = camera.ViewportSize
+	local px, py, rpx = planetTarget()
+	local tanHalf = math.tan(math.rad(camera.FieldOfView / 2))
+	local R = 12
+	local dist = R * (vp.Y / 2) / (rpx * tanHalf)
+	local upp = 2 * dist * tanHalf / vp.Y      -- стадов на пиксель на расстоянии планеты
+	local dx = (vp.X / 2 - px) * upp
+	local dy = -(vp.Y / 2 - py) * upp
+	local pos = center + out * dist + right * dx + up * dy
+	return CFrame.lookAt(pos, pos - out, up)
+end
+
+local bases = setmetatable({}, { __mode = "k" })
+local spinT, frame = 0, 0
+local function animatePlanets(dt)
+	spinT = spinT + dt
+	frame = frame + 1
+	for _, m in ipairs(planetsFolder:GetChildren()) do
+		local mine = m:GetAttribute("Owner") == player.UserId
+		if mine or frame % 4 == 0 then
+			local b = bases[m]
+			if not b then
+				b = {}
+				for _, n in ipairs({ "Spin", "Clouds", "Orbit" }) do
+					local part = m:FindFirstChild(n)
+					if part then b[n] = part:GetPivot() end
+				end
+				bases[m] = b
+				if mine then
+					local tag = m:FindFirstChild("Static") and m.Static:FindFirstChild("Tag")
+					if tag and tag:FindFirstChild("NameTag") then tag.NameTag.Enabled = false end
+				end
+			end
+			local speeds = { Spin = 0.12, Clouds = 0.17, Orbit = 0.3 }
+			for n, base in pairs(b) do
+				local part = m:FindFirstChild(n)
+				if part then part:PivotTo(base * CFrame.Angles(0, spinT * speeds[n], 0)) end
+			end
+		end
+	end
+end
+
+local function animateAsteroids()
+	local now = workspace:GetServerTimeNow()
+	for _, a in ipairs(asteroidsFolder:GetChildren()) do
+		local from, to = a:GetAttribute("From"), a:GetAttribute("To")
+		local t0, dur = a:GetAttribute("T0"), a:GetAttribute("Dur")
+		if from and to and t0 and dur then
+			local t = math.clamp((now - t0) / dur, 0, 1)
+			local e = 1 - (1 - t) * (1 - t)
+			local p = from:Lerp(to, e) + Vector3.new(0, math.sin(t * math.pi) * 3, 0)
+			a.CFrame = CFrame.new(p) * CFrame.Angles(now * 1.3, now * 0.9, 0)
+		end
+	end
+end
+
+-- ============================================================
+--  Тапы
+-- ============================================================
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Include
+local hitQueue = {}
+
+local function floatText(pos, text, color)
+	local p = Vector2.new(pos.X / SCALE, pos.Y / SCALE)
+	local l = label({ Text = text, Font = BOLD, TextSize = 20, TextColor3 = color or C.gold, TextStrokeTransparency = 0.4, TextXAlignment = Enum.TextXAlignment.Center, AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(160, 26), Position = UDim2.fromOffset(p.X + math.random(-14, 14), p.Y - 8), ZIndex = 20, Parent = root })
+	TweenService:Create(l, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Position = UDim2.fromOffset(p.X, p.Y - 70), TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
+	task.delay(0.95, function() l:Destroy() end)
+end
+
+local function pulsePlanet()
+	local m = myModel()
+	local core = m and m:FindFirstChild("Spin") and m.Spin:FindFirstChild("Core")
+	if not core then return end
+	local hl = core:FindFirstChild("TapGlow")
+	if not hl then
+		hl = new("Highlight", { Name = "TapGlow", FillColor = Color3.new(1, 1, 1), FillTransparency = 1, OutlineTransparency = 1, DepthMode = Enum.HighlightDepthMode.Occluded, Parent = core })
+	end
+	hl.FillTransparency = 0.82
+	TweenService:Create(hl, TweenInfo.new(0.25), { FillTransparency = 1 }):Play()
+end
+
+local function onTap(screenPos)
+	if not S then return end
+	local m = myModel()
+	rayParams.FilterDescendantsInstances = { asteroidsFolder, m }
+	local ray = camera:ScreenPointToRay(screenPos.X, screenPos.Y)
+	local hit = workspace:Raycast(ray.Origin, ray.Direction * 2000, rayParams)
+	if not hit then return end
+	local part = hit.Instance
+	if part:IsDescendantOf(asteroidsFolder) then
+		if part:GetAttribute("Owner") == player.UserId then
+			local id = part:GetAttribute("Id")
+			hitQueue[id] = (hitQueue[id] or 0) + 1
+			floatText(screenPos, "−" .. fmt(Shared.clickGain(S, false)), Color3.fromRGB(253, 186, 116))
+		end
+		return
+	end
+	if m and part:IsDescendantOf(m) then
+		pendingTaps = pendingTaps + 1
+		local g = Shared.clickGain(S, false)
+		sentGain = sentGain + g
+		floatText(screenPos, "+" .. fmt(g) .. " ☀️")
+		pulsePlanet()
+	end
+end
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then return end
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		onTap(input.Position)
+	end
+end)
+
+-- тапы отправляются пачками, чтобы не забивать сеть
+task.spawn(function()
+	while true do
+		task.wait(0.15)
+		if pendingTaps > 0 then
+			Action:FireServer("tap", pendingTaps)
+			pendingTaps = 0
+		end
+		for id, n in pairs(hitQueue) do
+			Action:FireServer("hit", id, n)
+		end
+		hitQueue = {}
+	end
+end)
+
+-- ============================================================
+--  Строки списков (создаются один раз и обновляются)
+-- ============================================================
+local rows = {}          -- [key] = { frame = ..., update = fn }
+local rowOrder = 0
+local function clearRows()
+	for _, r in pairs(rows) do r.frame:Destroy() end
+	rows = {}
+	rowOrder = 0
+end
+local function addRow(key, frame, update)
+	rowOrder = rowOrder + 1
+	frame.LayoutOrder = rowOrder
+	frame.Parent = scroll
+	rows[key] = { frame = frame, update = update }
+end
+local function card(h)
+	return new("Frame", { BackgroundColor3 = C.card, BackgroundTransparency = 0.1, Size = UDim2.new(1, 0, 0, h) }, { corner(14), stroke(C.stroke, 1, 0.8) })
+end
+local function section(text)
+	local f = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 24) })
+	label({ Text = text, Font = BOLD, TextSize = 12, TextColor3 = C.violet, Size = UDim2.new(1, -8, 1, 0), Position = UDim2.fromOffset(4, 0), Parent = f })
+	return f
+end
+
+local function costColor(ok) return ok and C.good or C.card2 end
+
+-- ---------- постройки ----------
+local function buildRows()
+	clearRows()
+	local modes = new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 34) })
+	label({ Text = "КУПИТЬ", Font = BOLD, TextSize = 11, TextColor3 = C.dim, Size = UDim2.fromOffset(56, 34), Parent = modes })
+	local mbtns = {}
+	for i, m in ipairs(Shared.BUY_MODES) do
+		local b = button({ Text = m == "max" and "MAX" or ("×" .. m), TextSize = 13, Size = UDim2.new(0.2, -14, 1, 0), Position = UDim2.new((i - 1) * 0.2, 56 - (i - 1) * 11, 0, 0) }, C.card2)
+		b.Parent = modes
+		b.Activated:Connect(function() buyMode = m; for _, x in pairs(rows) do x.update() end end)
+		mbtns[m] = b
+	end
+	addRow("modes", modes, function()
+		for m, b in pairs(mbtns) do b.BackgroundColor3 = (m == buyMode) and C.accent or C.card2 end
+	end)
+	local nextLocked = nil
+	for _, b in ipairs(Shared.BUILDINGS) do
+		if b.u <= S.era then
+			local f = card(82)
+			label({ Text = b.icon, TextSize = 30, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.fromOffset(46, 46), Position = UDim2.fromOffset(8, 18), Parent = f })
+			local name = label({ Text = b.name, Font = BOLD, TextSize = 14, Size = UDim2.new(1, -190, 0, 18), Position = UDim2.fromOffset(60, 8), TextTruncate = Enum.TextTruncate.AtEnd, Parent = f })
+			label({ Text = b.desc, TextSize = 11, TextColor3 = C.dim, Size = UDim2.new(1, -190, 0, 28), Position = UDim2.fromOffset(60, 27), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, Parent = f })
+			local prod = label({ Text = "", Font = BOLD, TextSize = 11, TextColor3 = C.good, Size = UDim2.new(1, -190, 0, 16), Position = UDim2.fromOffset(60, 58), TextTruncate = Enum.TextTruncate.AtEnd, Parent = f })
+			local btn = button({ Text = "", Size = UDim2.fromOffset(118, 62), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0) }, C.card2)
+			btn.Parent = f
+			local bt = label({ Text = "Построить", Font = BOLD, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, 8), Parent = btn })
+			local bc = label({ Text = "", TextSize = 11, TextXAlignment = Enum.TextXAlignment.Center, TextWrapped = true, Size = UDim2.new(1, -8, 0, 30), Position = UDim2.fromOffset(4, 27), Parent = btn })
+			btn.Activated:Connect(function() Action:FireServer("buy", b.id, buyMode) end)
+			addRow(b.id, f, function()
+				local cnt = S.counts[b.id] or 0
+				name.Text = b.name .. (cnt > 0 and ("  ×" .. cnt) or "")
+				local parts = {}
+				local m = Shared.prodMult(S, false)
+				for _, k in ipairs(Shared.RES_ORDER) do
+					if b.prod[k] then table.insert(parts, "+" .. Shared.fmtRate(b.prod[k] * m) .. Shared.RES[k].icon) end
+				end
+				prod.Text = table.concat(parts, " ") .. " /с"
+				local n = buyMode
+				if buyMode == "max" then n = math.max(1, Shared.maxAffordable(S, b)) end
+				local cost = Shared.bulkCost(S, b, n)
+				local ok = haveAll(cost)
+				bt.Text = "Построить" .. (n > 1 and (" ×" .. n) or "")
+				bc.Text = Shared.costText(cost)
+				btn.BackgroundColor3 = costColor(ok)
+				btn.AutoButtonColor = ok
+			end)
+		elseif not nextLocked then
+			nextLocked = b
+		end
+	end
+	if nextLocked then
+		local f = card(46)
+		f.BackgroundTransparency = 0.5
+		label({ Text = "🔒 " .. nextLocked.icon .. " " .. nextLocked.name .. " — откроется в эпохе " .. (nextLocked.u + 1), TextSize = 12, TextColor3 = C.dim, TextWrapped = true, Size = UDim2.new(1, -20, 1, 0), Position = UDim2.fromOffset(10, 0), Parent = f })
+		addRow("locked", f, function() end)
+	end
+end
+
+-- ---------- улучшения ----------
+local function perkEffect(id, l)
+	if id == "autoclicker" then return "Выстрелов: " .. (l * 2) .. "/с"
+	elseif id == "time_warp" then return "Скорость: +" .. (l * 25) .. "%"
+	elseif id == "cheap_build" then return "Скидка: −" .. (l * 10) .. "%"
+	elseif id == "starter_pack" then return "После престижа: +" .. (l * 300) .. " ☀️💧💨"
+	elseif id == "crit_solar" then return l > 0 and ("Шанс 15%, урон ×" .. (2 + l)) or "Откроет криты (шанс 15%)"
+	elseif id == "gaia" then return "Доход: +" .. (l * 25) .. "%"
+	elseif id == "tectonics" then return "Тап: +" .. (l * 50) .. "%"
+	elseif id == "oceans" then return "Скидка: −" .. (l * 8) .. "%"
+	end
+	return ""
+end
+local function perkRow(p, isGlobal)
+	local f = card(76)
+	label({ Text = p.icon, TextSize = 28, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.fromOffset(46, 46), Position = UDim2.fromOffset(8, 15), Parent = f })
+	local name = label({ Text = p.name, Font = BOLD, TextSize = 14, Size = UDim2.new(1, -170, 0, 18), Position = UDim2.fromOffset(60, 8), TextTruncate = Enum.TextTruncate.AtEnd, Parent = f })
+	label({ Text = p.desc, TextSize = 11, TextColor3 = C.dim, Size = UDim2.new(1, -170, 0, 28), Position = UDim2.fromOffset(60, 27), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, Parent = f })
+	local eff = label({ Text = "", Font = BOLD, TextSize = 11, TextColor3 = C.violet, Size = UDim2.new(1, -170, 0, 16), Position = UDim2.fromOffset(60, 55), Parent = f })
+	local btn = button({ Text = "", Size = UDim2.fromOffset(98, 48), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0) }, C.card2)
+	btn.Parent = f
+	btn.Activated:Connect(function() Action:FireServer(isGlobal and "gperk" or "perk", p.id) end)
+	return f, function()
+		local l = isGlobal and Shared.perk(S, p.id) or Shared.ppk(S, p.id)
+		name.Text = p.name .. "  " .. l .. "/" .. p.max
+		eff.Text = perkEffect(p.id, l)
+		if l >= p.max then
+			btn.Text = "MAX"; btn.BackgroundColor3 = C.card2; btn.AutoButtonColor = false
+		else
+			local c = Shared.perkCost(p, l)
+			btn.Text = "💎 " .. fmt(c)
+			local ok = S.gems >= c
+			btn.BackgroundColor3 = ok and Color3.fromRGB(139, 92, 246) or C.card2
+			btn.AutoButtonColor = ok
+		end
+	end
+end
+local function perkRows()
+	clearRows()
+	local hint = card(40)
+	hint.BackgroundTransparency = 0.5
+	local gemsLabel = label({ Text = "", TextSize = 12, TextColor3 = C.dim, TextWrapped = true, Size = UDim2.new(1, -20, 1, 0), Position = UDim2.fromOffset(10, 0), Parent = hint })
+	addRow("hint", hint, function() gemsLabel.Text = "💎 Кристаллов: " .. fmt(S.gems) .. " — дают астероиды и престиж" end)
+	addRow("s1", section("🌳 ДРЕВО ВЕЧНОСТИ"), function() end)
+	for _, p in ipairs(Shared.GLOBAL_PERKS) do
+		local f, upd = perkRow(p, true)
+		addRow("g_" .. p.id, f, upd)
+	end
+	addRow("s2", section("🌍 УЛУЧШЕНИЯ ЗЕМЛИ"), function() end)
+	for _, p in ipairs(Shared.PERKS) do
+		local f, upd = perkRow(p, false)
+		addRow("p_" .. p.id, f, upd)
+	end
+end
+
+-- ---------- престиж ----------
+local function prestigeRows()
+	clearRows()
+	local head = card(84)
+	local t1 = label({ Text = "", Font = BOLD, TextSize = 16, Size = UDim2.new(1, -24, 0, 22), Position = UDim2.fromOffset(12, 10), Parent = head })
+	label({ Text = "Престиж сбрасывает эпоху, постройки и ресурсы Земли, но доход и тап навсегда растут, а за престиж дают кристаллы.", TextSize = 11, TextColor3 = C.dim, TextWrapped = true, Size = UDim2.new(1, -24, 0, 40), Position = UDim2.fromOffset(12, 36), Parent = head })
+	addRow("head", head, function() t1.Text = "🌀 Престижей: " .. S.ppr .. "   ·   доход ×" .. (S.ppr + 1) end)
+	addRow("sg", section("ЦЕЛИ СЛЕДУЮЩЕГО ПРЕСТИЖА"), function() end)
+	for i = 1, 3 do
+		local f = card(40)
+		local t = label({ Text = "", TextSize = 13, Size = UDim2.new(1, -20, 1, 0), Position = UDim2.fromOffset(10, 0), TextTruncate = Enum.TextTruncate.AtEnd, Parent = f })
+		addRow("goal" .. i, f, function()
+			local g = Shared.prestigeInfo(S).goals[i]
+			f.Visible = g ~= nil
+			if not g then return end
+			local mark = g.ok and "✅ " or "⬜ "
+			if g.kind == "stage" then t.Text = mark .. "Эпоха " .. (g.need + 1) .. " «" .. Shared.ERAS[g.need + 1].name .. "» — сейчас " .. (S.era + 1)
+			elseif g.kind == "build" then t.Text = mark .. "Построек: " .. fmt(g.have) .. " / " .. fmt(g.need)
+			else t.Text = mark .. "Накопить ☀️ " .. fmt(g.need) .. " (есть " .. fmt(shown("solar")) .. ")" end
+			t.TextColor3 = g.ok and C.text or C.dim
+		end)
+	end
+	local f = card(96)
+	local reward = label({ Text = "", Font = BOLD, TextSize = 14, TextColor3 = C.violet, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.new(1, -20, 0, 22), Position = UDim2.fromOffset(10, 8), Parent = f })
+	local btn = button({ Text = "Совершить престиж", Size = UDim2.new(1, -24, 0, 48), Position = UDim2.fromOffset(12, 38) }, C.card2)
+	btn.Parent = f
+	btn.Activated:Connect(function()
+		if not Shared.prestigeInfo(S).ready then return end
+		if os.clock() < prestigeConfirmUntil then
+			prestigeConfirmUntil = 0
+			Action:FireServer("prestige")
+		else
+			prestigeConfirmUntil = os.clock() + 4
+			btn.Text = "Нажмите ещё раз — Земля начнёт заново"
+		end
+	end)
+	addRow("go", f, function()
+		local pi = Shared.prestigeInfo(S)
+		reward.Text = "Награда: +" .. pi.gems .. " 💎 и доход ×" .. pi.nextMult
+		btn.BackgroundColor3 = pi.ready and Color3.fromRGB(139, 92, 246) or C.card2
+		btn.AutoButtonColor = pi.ready
+		if os.clock() >= prestigeConfirmUntil then btn.Text = pi.ready and "🌀 Совершить престиж" or "Цели ещё не выполнены" end
+	end)
+end
+
+-- ---------- топ ----------
+local function topRows()
+	clearRows()
+	addRow("s1", section("🏆 МИРОВОЙ ТОП · престиж 100 очков, эпоха 1"), function() end)
+	if #topList == 0 then
+		local f = card(40)
+		f.BackgroundTransparency = 0.5
+		label({ Text = "Топ загружается… (обновляется раз в минуту)", TextSize = 12, TextColor3 = C.dim, Size = UDim2.new(1, -20, 1, 0), Position = UDim2.fromOffset(10, 0), Parent = f })
+		addRow("empty", f, function() end)
+	end
+	for i, e in ipairs(topList) do
+		local f = card(40)
+		if e.me == player.UserId then f.BackgroundColor3 = Color3.fromRGB(60, 50, 110) end
+		local medal = ({ "🥇", "🥈", "🥉" })[i] or tostring(i)
+		label({ Text = medal, Font = BOLD, TextSize = 15, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.fromOffset(34, 40), Position = UDim2.fromOffset(4, 0), Parent = f })
+		label({ Text = e.name, Font = BOLD, TextSize = 13, Size = UDim2.new(1, -150, 1, 0), Position = UDim2.fromOffset(42, 0), TextTruncate = Enum.TextTruncate.AtEnd, Parent = f })
+		label({ Text = "★ " .. fmt(e.score) .. "  🌀 " .. math.floor(e.score / 100), TextSize = 12, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Right, Size = UDim2.fromOffset(110, 40), AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 0), Parent = f })
+		addRow("t" .. i, f, function() end)
+	end
+	addRow("s2", section("👥 НА ЭТОМ СЕРВЕРЕ"), function() end)
+	local list = {}
+	for _, pl in ipairs(Players:GetPlayers()) do
+		local ls = pl:FindFirstChild("leaderstats")
+		local era = ls and ls:FindFirstChild("Эпоха") and ls["Эпоха"].Value or 1
+		local pr = ls and ls:FindFirstChild("Престиж") and ls["Престиж"].Value or 0
+		table.insert(list, { name = pl.DisplayName, era = era, ppr = pr, me = pl == player })
+	end
+	table.sort(list, function(a, b) return a.ppr * 100 + a.era > b.ppr * 100 + b.era end)
+	for i, e in ipairs(list) do
+		local f = card(36)
+		if e.me then f.BackgroundColor3 = Color3.fromRGB(60, 50, 110) end
+		label({ Text = i .. ". " .. e.name, Font = BOLD, TextSize = 13, Size = UDim2.new(1, -140, 1, 0), Position = UDim2.fromOffset(12, 0), TextTruncate = Enum.TextTruncate.AtEnd, Parent = f })
+		label({ Text = "Эпоха " .. e.era .. (e.ppr > 0 and ("  🌀 " .. e.ppr) or ""), TextSize = 12, TextColor3 = C.dim, TextXAlignment = Enum.TextXAlignment.Right, Size = UDim2.fromOffset(120, 36), AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -10, 0, 0), Parent = f })
+		addRow("p" .. i, f, function() end)
+	end
+end
+
+-- ============================================================
+--  Обновление экрана
+-- ============================================================
+local builtFor = nil     -- для какой вкладки/эпохи построены строки
+local TITLES = { build = "🏗️ Постройки", perks = "🌳 Улучшения", prestige = "🌀 Престиж Земли", top = "🏆 Топ игроков" }
+local function renderPanel(force)
+	if not S or not tab then return end
+	local key = tab .. "|" .. S.era .. (tab == "top" and ("|" .. #topList .. "|" .. #Players:GetPlayers()) or "")
+	if force or key ~= builtFor then
+		builtFor = key
+		sheetTitle.Text = TITLES[tab]
+		if tab == "build" then buildRows()
+		elseif tab == "perks" then perkRows()
+		elseif tab == "prestige" then prestigeRows()
+		else topRows() end
+	end
+	for _, r in pairs(rows) do r.update() end
+end
+
+local function selectTab(id)
+	if tab == id then tab = nil else tab = id end
+	builtFor = nil
+	for tid, t in pairs(tabButtons) do
+		local on = tid == tab
+		t.btn.BackgroundTransparency = on and 0.6 or 1
+	end
+	layout()
+	renderPanel(true)
+end
+for id, t in pairs(tabButtons) do
+	t.btn.Activated:Connect(function() selectTab(id) end)
+end
+sheetClose.Activated:Connect(function() if tab then selectTab(tab) end end)
+evolveBtn.Activated:Connect(function() Action:FireServer("evolve") end)
+
+local function renderHud()
+	if not S then return end
+	for _, k in ipairs(PILL_KEYS) do
+		pills[k].value.Text = fmt(shown(k))
+		if k == "gems" then pills[k].rate.Text = "Кристаллы"
+		else
+			local r = rates[k] or 0
+			if k == "solar" then r = r + Shared.perk(S, "autoclicker") * 2 * Shared.clickGain(S, false) end
+			pills[k].rate.Text = r > 0 and ("+" .. Shared.fmtRate(r) .. "/с") or Shared.RES[k].name
+		end
+	end
+	local E = Shared.ERAS[S.era + 1]
+	info.Text = "🌍 Земля · эпоха " .. (S.era + 1) .. " · доход ×" .. (S.ppr + 1) .. (S.ppr > 0 and ("  ·  🌀 " .. S.ppr) or "") .. "  ·  тап +" .. fmt(Shared.clickGain(S, false))
+	eraKicker.Text = "ЭПОХА " .. (S.era + 1)
+	eraKicker.BackgroundColor3 = rgb(E.halo)
+	eraName.Text = E.name
+	local cost = Shared.eraCost(S)
+	if cost then
+		local ratio = 1
+		for k, v in pairs(cost) do ratio = math.min(ratio, shown(k) / v) end
+		local ok = ratio >= 1
+		eraNext.Text = "Далее: «" .. Shared.ERAS[S.era + 2].name .. "»   " .. Shared.costText(cost)
+		eraBar.Size = UDim2.fromScale(math.clamp(ratio, 0, 1), 1)
+		evolveBtn.Text = "Эволюция"
+		evolveBtn.BackgroundColor3 = ok and C.good or C.card2
+		evolveBtn.AutoButtonColor = ok
+	else
+		eraNext.Text = "Земля прошла все 15 эпох! Время для престижа 🌀"
+		eraBar.Size = UDim2.fromScale(1, 1)
+		evolveBtn.Text = "Максимум"
+		evolveBtn.BackgroundColor3 = C.card2
+		evolveBtn.AutoButtonColor = false
+	end
+	tabButtons.prestige.dot.Visible = Shared.prestigeInfo(S).ready
+	local canPerk = false
+	for _, p in ipairs(Shared.GLOBAL_PERKS) do
+		local l = Shared.perk(S, p.id)
+		if l < p.max and S.gems >= Shared.perkCost(p, l) then canPerk = true end
+	end
+	tabButtons.perks.dot.Visible = canPerk
+	warnLabel.Visible = S.noSave == true
+	warnLabel.Text = "⚠️ Прогресс сейчас не сохраняется"
+	if asteroidState then
+		local left = math.max(0, asteroidState.dur - (os.clock() - asteroidState.at))
+		bannerText.Text = (asteroidState.golden and "✨ ЗОЛОТОЙ АСТЕРОИД! ЖМИ!" or "☄️ АСТЕРОИД! ЖМИ НА НЕГО!") .. "  " .. string.format("%.1f", left) .. "с"
+		bannerBar.Size = UDim2.fromScale(math.clamp(asteroidState.hp / asteroidState.maxHp, 0, 1), 1)
+	end
+end
+
+-- ============================================================
+--  События сервера
+-- ============================================================
+Sync.OnClientEvent:Connect(function(snap)
+	local first = S == nil
+	S = snap
+	syncAt = os.clock()
+	sentGain = pendingTaps * Shared.clickGain(S, false)
+	rates = Shared.rates(S, false)
+	if first then
+		layout()
+		if WIDE then selectTab("build") end
+	end
+	renderHud()
+	renderPanel(false)
+end)
+
+Fx.OnClientEvent:Connect(function(kind, d)
+	if kind == "evolve" then
+		local E = Shared.ERAS[d.era + 1]
+		local unlocks = {}
+		for _, b in ipairs(Shared.BUILDINGS) do
+			if b.u == d.era then table.insert(unlocks, b.icon .. " " .. b.name) end
+		end
+		showCinema("НОВАЯ ЭПОХА", tostring(d.era + 1), E.name, E.desc .. (#unlocks > 0 and ("\nОткрыто: " .. table.concat(unlocks, ", ")) or ""), rgb(E.halo))
+	elseif kind == "prestige" then
+		showCinema("ЗЕМЛЯ · ПРЕСТИЖ №" .. d.n, "🌀", "Доход ×" .. (d.n + 1), "Планета начала путь заново, но стала сильнее. +" .. d.gems .. " 💎 на улучшения.", C.violet)
+	elseif kind == "asteroid" then
+		asteroidState = { id = d.id, golden = d.golden, hp = d.hp, maxHp = d.maxHp, dur = d.dur, at = os.clock() }
+		banner.BackgroundColor3 = d.golden and Color3.fromRGB(120, 90, 10) or Color3.fromRGB(120, 30, 20)
+		banner.Visible = true
+	elseif kind == "asteroidHp" then
+		if asteroidState and asteroidState.id == d.id then asteroidState.hp = d.hp end
+	elseif kind == "asteroidDone" then
+		asteroidState = nil
+		banner.Visible = false
+		toast((d.golden and "✨ Золотой астероид" or "☄️ Астероид") .. " уничтожен! +" .. d.gems .. " 💎, +" .. fmt(d.bonus) .. " ☀️", C.gold)
+	elseif kind == "asteroidMiss" then
+		if asteroidState then toast("💥 Астероид упал на планету — в следующий раз успейте!", C.bad) end
+		asteroidState = nil
+		banner.Visible = false
+	elseif kind == "offline" then
+		local h = math.floor(d.sec / 3600)
+		local m = math.floor((d.sec % 3600) / 60)
+		toast("😴 Пока вас не было " .. (h > 0 and (h .. " ч " .. m .. " мин") or (m .. " мин")) .. ": +" .. fmt(d.gain) .. " ☀️ и другие ресурсы", C.good)
+	elseif kind == "toast" then
+		toast(d.text, C.bad)
+	end
+end)
+
+Top.OnClientEvent:Connect(function(list)
+	topList = list or {}
+	if tab == "top" then renderPanel(true) end
+end)
+
+-- ============================================================
+--  Каждый кадр
+-- ============================================================
+camera:GetPropertyChangedSignal("ViewportSize"):Connect(function() layout(); builtFor = nil; renderPanel(true) end)
+layout()
+local hudTimer = 0
+RunService.RenderStepped:Connect(function(dt)
+	if camera.CameraType ~= Enum.CameraType.Scriptable then camera.CameraType = Enum.CameraType.Scriptable end
+	animatePlanets(dt)
+	animateAsteroids()
+	local goal = cameraGoal()
+	if goal then
+		camCF = camCF and camCF:Lerp(goal, math.min(1, dt * 4)) or goal
+		camera.CFrame = camCF
+	end
+	hudTimer = hudTimer + dt
+	if hudTimer > 0.2 then
+		hudTimer = 0
+		renderHud()
+	end
+end)
+]]></ProtectedString>
+				</Properties>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

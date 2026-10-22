@@ -17,6 +17,7 @@ server/     сервер: вход через Google, сохранения, ре
             node/ — запуск на своём сервере, vps/ — автоустановка на VPS (для игроков из России)
             twitch/ — сборка игры для панели под трансляцией на Twitch
 telegram/   ежедневные посты в Telegram-канал (тексты, картинки, сценарий публикации)
+roblox/     отдельная игра для Roblox (исходники Luau и сборка места .rbxlx)
 .github/    сценарии автосборки: «Build APK» и «Deploy server»
 ```
 
@@ -244,6 +245,38 @@ Twitch проверяет расширение 8–14 дней, после од�
 Время публикации меняется в строке `cron` в `.github/workflows/telegram.yml` (время UTC: `7 15 * * *` — это 18:07 МСК).
 GitHub отключает расписание, если в репозитории 60 дней не было изменений, — тогда в Actions → Telegram появится
 кнопка **Enable workflow**.
+
+## Roblox-версия
+
+В папке `roblox/` — отдельная игра Terra 3D для Roblox (свой прогресс и топ внутри Roblox): 15 эпох Земли, 25 построек,
+тапы, астероиды, престиж, улучшения Земли и Древо Вечности, сохранения (DataStore), доход за время отсутствия (до 8 ч),
+мировой топ и топ сервера. Каждый игрок получает свою 3D-планету в общем космосе — планеты других игроков видно рядом.
+Экономика та же, что в основной игре. Проверки без Studio (нужен [Luau](https://github.com/luau-lang/luau)):
+`luau roblox/tests/shared_test.luau` — формулы, `python3 roblox/build.py && luau roblox/tests/smoke_test.luau` —
+сервер и клиент целиком в «песочнице Roblox» (вход, тапы, покупки, эволюция, астероид, престиж, сохранения).
+
+```
+roblox/src/shared/TerraShared.lua          данные Земли и формулы (общие для сервера и клиента)
+roblox/src/server/TerraServer.server.lua   сервер: прогресс, покупки, сохранения, астероиды, топ
+roblox/src/server/PlanetBuilder.lua        3D-планета по эпохе и постройкам
+roblox/src/client/TerraClient.client.lua   камера, тапы, интерфейс
+roblox/build.py                            собирает всё в roblox/TerraRoblox.rbxlx
+```
+
+**Как выложить:**
+
+1. Установите [Roblox Studio](https://create.roblox.com/) (Windows или Mac) и войдите своим аккаунтом Roblox.
+2. Соберите файл: `python3 roblox/build.py` (или возьмите готовый `roblox/TerraRoblox.rbxlx`).
+3. Studio → **File → Open from File** → `TerraRoblox.rbxlx`.
+4. Проверка: кнопка **Play** (F5). Окно ошибок — **View → Output**.
+5. **File → Publish to Roblox** → «Create new experience», название `Terra 3D`.
+6. После публикации: **Game Settings → Security → Enable Studio Access to API Services** — тогда и в Studio
+   работают сохранения (в опубликованной игре они работают всегда).
+7. Чтобы игру видели все: [Creator Dashboard](https://create.roblox.com/dashboard/creations) → игра → заполнить
+   опросник о содержимом (Experience Questionnaire) → **Public**. Там же — иконка (512×512) и картинки для страницы.
+
+Обновить игру: поправить файлы в `roblox/src`, снова `python3 roblox/build.py`, открыть новый `.rbxlx` и опубликовать
+поверх (**File → Publish to Roblox As** → выбрать существующую игру). Сохранения игроков не теряются.
 
 ## Промокоды
 
