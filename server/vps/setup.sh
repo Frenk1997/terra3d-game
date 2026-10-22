@@ -11,7 +11,11 @@
 #   сервисы systemd: terra (игра, 127.0.0.1:8787) и caddy (порты 80 и 443)
 set -euo pipefail
 D="$(cd "$(dirname "$0")" && pwd)"
-trap 'rm -rf "$D"' EXIT   # во временной папке секреты — не оставляем её
+trap 'rm -rf "$D" /tmp/terra-dl' EXIT   # во временной папке секреты — не оставляем её
+# Node.js и Caddy либо приехали вместе с игрой, либо сервер скачал их сам (deploy.sh) — в /tmp/terra-dl
+for b in node caddy; do
+  if [ ! -f "$D/$b" ] && [ -f "/tmp/terra-dl/$b" ]; then mv "/tmp/terra-dl/$b" "$D/$b"; fi
+done
 say() { printf '\n== %s\n' "$*"; }
 
 [ "$(id -u)" = 0 ] || { echo "Нужен вход под root (VPS_USER=root)"; exit 1; }

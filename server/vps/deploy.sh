@@ -63,21 +63,58 @@ trap 'rm -rf "$T"' EXIT
 B="$T/terra-deploy"
 mkdir -p "$B/app/node"
 
+# Node.js и Caddy ставятся один раз. Сначала сервер пробует скачать их сам (быстрее), проверяя
+# контрольные суммы; не вышло — скачиваем здесь и загружаем на сервер вместе с игрой.
+NEED_NODE=0; NEED_CADDY=0; NF=""; NSUM=""; CF=""; CSUM=""
+CBASE="https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION"
 if [ "$R_NODE" != "v$NODE_VERSION" ]; then
-  echo "Скачиваю Node.js $NODE_VERSION"
-  f="node-v$NODE_VERSION-linux-$NA.tar.xz"
-  curl -fsSL --retry 3 -o "$T/$f" "https://nodejs.org/dist/v$NODE_VERSION/$f"
-  (cd "$T" && curl -fsSL --retry 3 "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt" | grep "  $f\$" | sha256sum -c --quiet -)
-  tar -xJf "$T/$f" -C "$T" "node-v$NODE_VERSION-linux-$NA/bin/node"
-  mv "$T/node-v$NODE_VERSION-linux-$NA/bin/node" "$B/node"
+  NEED_NODE=1
+  NF="node-v$NODE_VERSION-linux-$NA.tar.xz"
+  NSUM="$(curl -fsSL --retry 3 "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt" | awk -v f="$NF" '$2 == f { print $1 }')"
 fi
 if [ "$R_CADDY" != "v$CADDY_VERSION" ]; then
-  echo "Скачиваю Caddy $CADDY_VERSION"
-  f="caddy_${CADDY_VERSION}_linux_$CA.tar.gz"
-  base="https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION"
-  curl -fsSL --retry 3 -o "$T/$f" "$base/$f"
-  (cd "$T" && curl -fsSL --retry 3 "$base/caddy_${CADDY_VERSION}_checksums.txt" | grep "  $f\$" | sha512sum -c --quiet -)
-  tar -xzf "$T/$f" -C "$B" caddy
+  NEED_CADDY=1
+  CF="caddy_${CADDY_VERSION}_linux_$CA.tar.gz"
+  CSUM="$(curl -fsSL --retry 3 "$CBASE/caddy_${CADDY_VERSION}_checksums.txt" | awk -v f="$CF" '$2 == f { print $1 }')"
+fi
+if [ "$NEED_NODE$NEED_CADDY" != "00" ]; then
+  echo "Сервер скачивает Node.js и Caddy сам…"
+  got="$(rssh "NEED_NODE=$NEED_NODE NEED_CADDY=$NEED_CADDY NV=$NODE_VERSION NA=$NA NF=$NF NSUM=$NSUM CF=$CF CSUM=$CSUM CBASE=$CBASE bash -s" <<'REMOTE' || true
+set -u
+rm -rf /tmp/terra-dl && mkdir -p /tmp/terra-dl && cd /tmp/terra-dl
+dl() {
+  local out="$1"; shift
+  for u in "$@"; do
+    if command -v curl >/dev/null 2>&1; then curl -fsSL --connect-timeout 10 --max-time 240 -o "$out" "$u" && return 0
+    elif command -v wget >/dev/null 2>&1; then wget -q -T 60 -O "$out" "$u" && return 0; fi
+  done
+  return 1
+}
+if [ "$NEED_NODE" = 1 ] && [ -n "$NSUM" ] && command -v xz >/dev/null 2>&1; then
+  if dl "$NF" "https://nodejs.org/dist/v$NV/$NF" "https://npmmirror.com/mirrors/node/v$NV/$NF" \
+     && echo "$NSUM  $NF" | sha256sum -c --quiet - && tar -xJf "$NF" --strip-components=2 "node-v$NV-linux-$NA/bin/node"; then echo NODE_OK; fi
+fi
+if [ "$NEED_CADDY" = 1 ] && [ -n "$CSUM" ]; then
+  if dl "$CF" "$CBASE/$CF" && echo "$CSUM  $CF" | sha512sum -c --quiet - && tar -xzf "$CF" caddy; then echo CADDY_OK; fi
+fi
+rm -f /tmp/terra-dl/*.tar.*
+REMOTE
+)"
+  if grep -q NODE_OK <<<"$got"; then NEED_NODE=0; echo "Node.js $NODE_VERSION — скачан сервером"; fi
+  if grep -q CADDY_OK <<<"$got"; then NEED_CADDY=0; echo "Caddy $CADDY_VERSION — скачан сервером"; fi
+fi
+if [ "$NEED_NODE" = 1 ]; then
+  echo "Скачиваю Node.js $NODE_VERSION (загружу на сервер вместе с игрой)"
+  curl -fsSL --retry 3 -o "$T/$NF" "https://nodejs.org/dist/v$NODE_VERSION/$NF"
+  (cd "$T" && echo "$NSUM  $NF" | sha256sum -c --quiet -)
+  tar -xJf "$T/$NF" -C "$T" "node-v$NODE_VERSION-linux-$NA/bin/node"
+  mv "$T/node-v$NODE_VERSION-linux-$NA/bin/node" "$B/node"
+fi
+if [ "$NEED_CADDY" = 1 ]; then
+  echo "Скачиваю Caddy $CADDY_VERSION (загружу на сервер вместе с игрой)"
+  curl -fsSL --retry 3 -o "$T/$CF" "$CBASE/$CF"
+  (cd "$T" && echo "$CSUM  $CF" | sha512sum -c --quiet -)
+  tar -xzf "$T/$CF" -C "$B" caddy
 fi
 
 echo "== 2/4 Сборка"
@@ -116,7 +153,12 @@ chmod 600 "$B/config.json"
 cp vps/setup.sh "$B/"
 
 echo "== 3/4 Выкладка на сервер"
-tar -C "$T" -czf - terra-deploy | rssh 'rm -rf /tmp/terra-deploy && tar -xzf - -C /tmp && bash /tmp/terra-deploy/setup.sh'
+tar -C "$T" -czf "$T/bundle.tgz" terra-deploy
+echo "Загружаю $(du -h "$T/bundle.tgz" | cut -f1) на сервер…"
+t0=$(date +%s)
+rssh 'umask 077 && rm -rf /tmp/terra-deploy /tmp/terra-deploy.tgz && cat > /tmp/terra-deploy.tgz' < "$T/bundle.tgz"
+echo "Загружено за $(( $(date +%s) - t0 )) с"
+rssh 'tar -xzf /tmp/terra-deploy.tgz -C /tmp && rm -f /tmp/terra-deploy.tgz && bash /tmp/terra-deploy/setup.sh'
 
 echo "== 4/4 Проверка: $PUBLIC_URL"
 ok=0
