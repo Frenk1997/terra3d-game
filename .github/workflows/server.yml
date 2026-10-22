@@ -50,6 +50,7 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           PROMO_CODES: ${{ secrets.PROMO_CODES }}
           FORCE_UPDATE: ${{ secrets.FORCE_UPDATE }}
+          TWITCH_EXT_SECRET: ${{ secrets.TWITCH_EXT_SECRET }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: bash server/vps/deploy.sh
 
@@ -63,6 +64,7 @@ jobs:
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
           PROMO_CODES: ${{ secrets.PROMO_CODES }}
           FORCE_UPDATE: ${{ secrets.FORCE_UPDATE }}
+          TWITCH_EXT_SECRET: ${{ secrets.TWITCH_EXT_SECRET }}
           MOVED_TO: ${{ steps.vps.outputs.url }}
           APK_URL: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/terra3d.apk
         run: bash server/deploy.sh

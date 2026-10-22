@@ -104,3 +104,19 @@ CREATE TABLE IF NOT EXISTS alliance_weekly (
   PRIMARY KEY (week, alliance_id)
 );
 CREATE INDEX IF NOT EXISTS idx_alliance_weekly ON alliance_weekly (week, taps DESC);
+
+-- Twitch: зритель (opaque id «U…» из расширения) привязан к аккаунту игры
+CREATE TABLE IF NOT EXISTS twitch_links (
+  twitch_id  TEXT PRIMARY KEY,
+  sub        TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS twitch_links_sub ON twitch_links (sub);
+
+-- одноразовые коды привязки (живут 10 минут)
+CREATE TABLE IF NOT EXISTS link_codes (
+  code       TEXT PRIMARY KEY,
+  sub        TEXT NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS link_codes_sub ON link_codes (sub);

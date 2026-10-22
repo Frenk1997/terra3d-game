@@ -11,6 +11,8 @@
 //   GITHUB_REPO           — (необязательно) «владелец/репозиторий»: откуда брать номер последней версии APK
 //   FORCE_UPDATE          — (необязательно) '0' — пускать в игру устаревшие APK; по умолчанию играть можно только в последней версии
 //   PROMO_CODES           — (необязательно, секрет) свои промокоды, по одному в строке (формат — в README)
+//   TWITCH_EXT_SECRET     — (необязательно, секрет) секрет расширения Twitch (base64, из кабинета разработчика):
+//                           вход зрителей в игру в панели под трансляцией; при смене секрета — оба через запятую
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -503,7 +505,8 @@ async function handleRedeem(request, sub, env) {
 async function handleMe(sub, env) {
   const p = await getPlayer(env, sub);
   if (p) await touchMeta(env, sub, p);
-  return json({ uid: sub, profile: p ? await profileView(env, p) : null, save: parseSave(p) });
+  const tw = await env.DB.prepare('SELECT 1 AS x FROM twitch_links WHERE sub = ?1 LIMIT 1').bind(sub).first();
+  return json({ uid: sub, profile: p ? await profileView(env, p) : null, save: parseSave(p), twitch: !!tw });
 }
 
 async function handleProfile(request, sub, env) {
@@ -646,8 +649,14 @@ async function handleReset(sub, env) {
 }
 
 async function handleDelete(sub, env) {
+  await deleteAccount(env, sub);
+  return json({ ok: true });
+}
+async function deleteAccount(env, sub) {
   await leaveAlliance(env, sub);
   await env.DB.batch([
+    env.DB.prepare('DELETE FROM twitch_links WHERE sub = ?1').bind(sub),
+    env.DB.prepare('DELETE FROM link_codes WHERE sub = ?1').bind(sub),
     env.DB.prepare('DELETE FROM friends WHERE a = ?1 OR b = ?1').bind(sub),
     env.DB.prepare('DELETE FROM player_meta WHERE sub = ?1').bind(sub),
     env.DB.prepare('DELETE FROM players WHERE sub = ?1').bind(sub),
@@ -657,7 +666,6 @@ async function handleDelete(sub, env) {
     env.DB.prepare('DELETE FROM promo_uses WHERE sub = ?1').bind(sub),
     env.DB.prepare('DELETE FROM promo_fails WHERE sub = ?1').bind(sub)
   ]);
-  return json({ ok: true });
 }
 
 async function handleLeaderboard(request, url, env) {
@@ -1064,8 +1072,109 @@ async function handleClient(request, env) {
   return json({ latest, update, required: update && forceUpdate(env), site: env.SITE_VERSION || null });
 }
 
+// ============================================================
+//  TWITCH: игра в панели под трансляцией
+// ============================================================
+// Twitch передаёт игре в панели JWT зрителя, подписанный секретом расширения (HS256, секрет в base64).
+// opaque_user_id на «U…» — постоянный id вошедшего зрителя (один и тот же на всех каналах), «A…» — аноним.
+// Своя учётка зрителя — sub «tw_U…»; по коду из игры (APK/сайт) зритель привязывается к своему аккаунту Google.
+const TWITCH_PREFIX = 'tw_';
+const LINK_TTL_MS = 10 * 60 * 1000;   // код привязки живёт 10 минут
+
+async function verifyTwitchJwt(token, env) {
+  const secrets = String(env.TWITCH_EXT_SECRET || '').split(/[\s,]+/).filter(Boolean);
+  token = String(token || '');
+  const p = token.split('.');
+  if (!secrets.length || p.length !== 3 || token.length > 4000) return null;
+  let header, payload, sig;
+  try { header = JSON.parse(b64urlToStr(p[0])); payload = JSON.parse(b64urlToStr(p[1])); sig = b64urlToBytes(p[2]); } catch (e) { return null; }
+  if (!header || header.alg !== 'HS256' || !payload || typeof payload !== 'object') return null;
+  const data = enc.encode(`${p[0]}.${p[1]}`);
+  let ok = false;
+  for (const s of secrets) {
+    let raw;
+    try { raw = Uint8Array.from(atob(s), c => c.charCodeAt(0)); } catch (e) { continue; }
+    if (!raw.length) continue;
+    const key = await crypto.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+    if (await crypto.subtle.verify('HMAC', key, sig, data)) { ok = true; break; }
+  }
+  if (!ok || !Number.isFinite(payload.exp) || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  const id = String(payload.opaque_user_id || '');
+  return { id, logged: /^U[A-Za-z0-9]{1,64}$/.test(id) };
+}
+async function twitchViewer(request, env) {
+  if (!env.TWITCH_EXT_SECRET) return { err: fail(503, 'twitch_not_configured') };
+  const body = await readJson(request);
+  const tw = await verifyTwitchJwt(body && body.token, env);
+  if (!tw) return { err: fail(401, 'invalid_twitch_token') };
+  if (!tw.logged) return { err: fail(403, 'twitch_login_required') };
+  return { tw, body };
+}
+async function sessionReply(env, sub, extra = {}) {
+  const token = await signSession(sub, env);
+  const p = await getPlayer(env, sub);
+  if (p) await touchMeta(env, sub, p);
+  return json({ token, uid: sub, profile: p ? await profileView(env, p) : null, save: parseSave(p), ...extra });
+}
+
+// вход из панели: привязанный зритель играет своим аккаунтом из игры, остальные — своей Twitch-учёткой
+async function handleTwitchAuth(request, env) {
+  const { tw, err } = await twitchViewer(request, env);
+  if (err) return err;
+  const l = await env.DB.prepare('SELECT sub FROM twitch_links WHERE twitch_id = ?1').bind(tw.id).first();
+  return sessionReply(env, l ? l.sub : TWITCH_PREFIX + tw.id, { linked: !!l });
+}
+
+// в игре (APK/сайт): одноразовый код, чтобы войти этим же аккаунтом в панели на Twitch
+async function handleTwitchCode(sub, env) {
+  if (sub.startsWith(TWITCH_PREFIX)) return fail(400, 'not_game_account');
+  if (!(await getPlayer(env, sub))) return fail(404, 'no_profile');
+  const now = Date.now();
+  for (let i = 0; i < 6; i++) {
+    const code = randomCode(6);
+    try {
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM link_codes WHERE sub = ?1 OR expires_at < ?2').bind(sub, now),
+        env.DB.prepare('INSERT INTO link_codes (code, sub, expires_at) VALUES (?1, ?2, ?3)').bind(code, sub, now + LINK_TTL_MS)
+      ]);
+      return json({ code, expiresAt: now + LINK_TTL_MS });
+    } catch (e) {
+      if (!String((e && e.message) || e).includes('UNIQUE')) throw e;
+    }
+  }
+  return fail(500, 'server_error');
+}
+
+// в панели: ввод кода — дальше этот зритель Twitch играет аккаунтом из игры (общий прогресс и топ)
+async function handleTwitchLink(request, env) {
+  const { tw, body, err } = await twitchViewer(request, env);
+  if (err) return err;
+  const now = Date.now(), failKey = 'l:' + tw.id;
+  if (await tooManyFails(env, failKey, now)) return fail(429, 'too_many_attempts');
+  const code = normFriendCode(body.code);
+  const row = code ? await env.DB.prepare('SELECT sub, expires_at FROM link_codes WHERE code = ?1').bind(code).first() : null;
+  if (!row || row.expires_at < now || !(await getPlayer(env, row.sub))) {
+    await addFail(env, failKey, now);
+    return fail(404, 'code_not_found');
+  }
+  // отдельная Twitch-учётка этого зрителя больше не нужна — её прогресс заменяется прогрессом из игры
+  await deleteAccount(env, TWITCH_PREFIX + tw.id);
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM link_codes WHERE code = ?1').bind(code),
+    env.DB.prepare(`INSERT INTO twitch_links (twitch_id, sub, created_at) VALUES (?1, ?2, ?3)
+      ON CONFLICT (twitch_id) DO UPDATE SET sub = ?2, created_at = ?3`).bind(tw.id, row.sub, now)
+  ]);
+  return sessionReply(env, row.sub, { linked: true });
+}
+
+async function handleTwitchUnlink(sub, env) {
+  await env.DB.prepare('DELETE FROM twitch_links WHERE sub = ?1').bind(sub).run();
+  return json({ ok: true });
+}
+
 const PROTECTED = ['/api/me', '/api/profile', '/api/sync', '/api/reset', '/api/account', '/api/redeem', '/api/social',
-  '/api/friends', '/api/friends/remove', '/api/alliance/create', '/api/alliance/join', '/api/alliance/leave', '/api/alliance/kick', '/api/alliance/settings'];
+  '/api/friends', '/api/friends/remove', '/api/alliance/create', '/api/alliance/join', '/api/alliance/leave', '/api/alliance/kick', '/api/alliance/settings',
+  '/api/twitch/code', '/api/twitch/unlink'];
 
 // ---------- переезд на другой сервер ----------
 // MOVED_TO = 'https://новый-адрес' — игра переехала (например, на сервер в России, где Cloudflare ограничен).
@@ -1127,6 +1236,8 @@ export default {
         if (old) return request.headers.get('X-Terra-Client') ? json({ error: 'update_required', latest: old }, 426) : fail(401, 'update_required');
       }
       if (path === '/api/auth/exchange' && m === 'POST') return await handleExchange(request, env);
+      if (path === '/api/auth/twitch' && m === 'POST') return await handleTwitchAuth(request, env);
+      if (path === '/api/twitch/link' && m === 'POST') return await handleTwitchLink(request, env);
       if (path === '/auth/google/start' && m === 'GET') return await handleAuthStart(url, env);
       if (path === '/auth/google/callback' && m === 'GET') return await handleAuthCallback(url, env);
 
@@ -1147,6 +1258,8 @@ export default {
         if (path === '/api/alliance/leave' && m === 'POST') return await handleAllianceLeave(sub, env);
         if (path === '/api/alliance/kick' && m === 'POST') return await handleAllianceKick(request, sub, env);
         if (path === '/api/alliance/settings' && m === 'POST') return await handleAllianceSettings(request, sub, env);
+        if (path === '/api/twitch/code' && m === 'POST') return await handleTwitchCode(sub, env);
+        if (path === '/api/twitch/unlink' && m === 'POST') return await handleTwitchUnlink(sub, env);
       }
       return fail(404, 'not_found');
     } catch (e) {

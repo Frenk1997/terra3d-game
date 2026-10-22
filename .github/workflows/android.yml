@@ -71,6 +71,14 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk "$GITHUB_WORKSPACE/terra3d.apk"
           ls -la "$GITHUB_WORKSPACE/terra3d.apk"
 
+      # Та же игра для панели под трансляцией на Twitch: zip загружается в кабинет разработчика Twitch (SETUP.md)
+      - name: Панель для Twitch
+        run: |
+          case "$TERRA_API" in
+            https://*) bash server/twitch/build.sh "$TERRA_API" terra3d-twitch.zip ;;
+            *) echo "::warning::Адрес сервера не https — панель для Twitch не собрана" ;;
+          esac
+
       - name: Описание версии для окна «Вышло обновление»
         env:
           BUILD_NUMBER: ${{ github.run_number }}
@@ -93,11 +101,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v1.0.${{ github.run_number }}"
-          gh release create "$TAG" terra3d.apk version.json \
+          FILES=(terra3d.apk version.json)
+          [ -f terra3d-twitch.zip ] && FILES+=(terra3d-twitch.zip)
+          gh release create "$TAG" "${FILES[@]}" \
             --repo "${{ github.repository }}" \
             --target "${{ github.sha }}" \
             --title "Terra 3D $TAG" \
-            --notes "Скачать: terra3d.apk ниже. Постоянная ссылка на последнюю версию: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/terra3d.apk" \
+            --notes "Скачать: terra3d.apk ниже. Постоянная ссылка на последнюю версию: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/terra3d.apk. terra3d-twitch.zip — игра для панели на Twitch (загружается в кабинет разработчика Twitch, см. SETUP.md)." \
             --latest
           echo "### APK готов 🎉" >> "$GITHUB_STEP_SUMMARY"
           echo "Ссылка для игроков: ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/terra3d.apk" >> "$GITHUB_STEP_SUMMARY"

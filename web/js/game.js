@@ -6,6 +6,8 @@
 // ============================================================
 const RAW_CONFIG = window.TERRA_CONFIG || {};
 const IS_APP = typeof window.TerraNative === 'object' && window.TerraNative !== null; // запущено внутри APK
+const IS_TWITCH = !!RAW_CONFIG.TWITCH;   // сборка для панели под трансляцией на Twitch (server/twitch/build.sh)
+if (IS_TWITCH) document.documentElement.classList.add('twitch');
 // номер сборки APK (v1.0.N) — приложение дописывает его в User-Agent; на сайте 0
 const MY_BUILD = IS_APP ? (parseInt((navigator.userAgent.match(/\bTerraBuild\/(\d+)/) || [])[1], 10) || 0) : 0;
 const CONFIG = { API_URL: '', APK_URL: String(RAW_CONFIG.APK_URL || '').trim() };
@@ -421,11 +423,122 @@ async function syncNow(keepalive = false) {
     if (e.status === 404 && e.message === 'no_profile') { syncing = false; logout({ ask: false, skipSync: true, message: 'Аккаунт не найден. Войдите снова.' }); return; }
     if (e.status === 409 && e.message === 'client_outdated') {
       clientOutdated = true;
+      if (IS_TWITCH) { showToast('Вышла новая версия игры — на Twitch она появится чуть позже', 6000); setSync('off'); return; }
       if (!IS_APP) { reloadForNewVersion(); return; }   // сайт: просто берём новую версию игры
       showToast('Вышла новая версия игры — обновите приложение', 6000); checkUpdate(true);
     }
     setSync('off');
   } finally { syncing = false; }
+}
+
+// ---------- Twitch: вход зрителя в панели под трансляцией ----------
+// Twitch сам сообщает игре, кто смотрит (JWT расширения); сервер проверяет его и выдаёт обычную сессию.
+// Аккаунт из игры (APK/сайт) привязывается по одноразовому коду — тогда прогресс и топ общие.
+let twitchToken = null, twitchUser = '', twitchLinked = false;
+function twitchBoot() {
+  const ext = window.Twitch && window.Twitch.ext;
+  if (!ext) { showLogin('Не удалось подключиться к Twitch. Обновите страницу.'); return; }
+  let started = false;
+  const t = setTimeout(() => { if (!started) { started = true; showLogin('Twitch не ответил. Обновите страницу.'); } }, 15000);
+  ext.onAuthorized((auth) => {
+    twitchToken = auth && auth.token; twitchUser = String((auth && auth.userId) || '');
+    if (started) { if (!playing && $('loginOverlay').classList.contains('open')) showLogin(); return; }   // токен обновился
+    started = true; clearTimeout(t);
+    if (/^U/.test(twitchUser)) twitchLogin(); else showLogin();
+  });
+}
+async function twitchLogin() {
+  if (!twitchToken) { showLogin(); return; }
+  closeAllOverlays();
+  $('loginOverlay').classList.add('open');
+  setLoginBusy(true, 'Загружаем ваш прогресс…');
+  try {
+    const r = await api('/api/auth/twitch', { method: 'POST', body: { token: twitchToken } });
+    session = { token: r.token, uid: r.uid, nickname: r.profile ? r.profile.nickname : null };
+    twitchLinked = !!r.linked;
+    saveSession();
+    await enterGame(r.profile, r.save, false);
+  } catch (e) {
+    session = null;
+    showLogin(e.status === 503 ? 'Игра на Twitch ещё настраивается — пока можно сыграть гостем.'
+      : e.status === 403 ? '' : 'Не удалось войти. Проверьте интернет и попробуйте снова.');
+  }
+}
+// в панели: ввести код из игры — дальше здесь аккаунт из игры
+function openTwitchLink() {
+  const sheet = $('settingsSheet');
+  sheet.innerHTML = `
+    <div class="q-head"><div><h2>🔗 Аккаунт из игры</h2></div><button class="btn-icon" id="setClose" type="button">✕</button></div>
+    <div class="set-text">Играете в Terra 3D на телефоне или на сайте? Привяжите тот аккаунт — прогресс, друзья, альянс и место в топе станут общими.</div>
+    <ol class="set-steps"><li>В игре на телефоне или на сайте: ⚙️ Настройки → «📺 Играть на Twitch»</li><li>Введите показанный там код здесь</li></ol>
+    <div class="add-row"><input id="twCodeInput" type="text" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Код из игры"><button class="btn-small" id="twLinkBtn" type="button">Привязать</button></div>
+    <div class="nick-msg" id="twMsg"></div>
+    <div class="set-text dim">Прогресс, набранный здесь, на Twitch, заменится прогрессом из игры.</div>
+    <button class="btn-soft" id="twBack" type="button">← Назад</button>`;
+  $('setClose').onclick = () => $('settingsOverlay').classList.remove('open');
+  $('twBack').onclick = () => renderSettings();
+  const msg = (t, bad) => { $('twMsg').textContent = t; $('twMsg').className = 'nick-msg' + (bad ? ' err' : t ? ' ok' : ''); };
+  const go = async () => {
+    const code = $('twCodeInput').value.trim();
+    if (!code) { msg('Введите код из игры', true); Sound.error(); return; }
+    if (!twitchToken || !/^U/.test(twitchUser)) { msg('Сначала войдите в Twitch', true); return; }
+    $('twLinkBtn').disabled = true; msg('Привязываем…');
+    try {
+      const r = await api('/api/twitch/link', { method: 'POST', body: { token: twitchToken, code } });
+      // переключаемся на аккаунт из игры: Twitch-учётка удалена, её больше не синхронизируем
+      playing = false; clearTimeout(syncTimer);
+      try { if (session) localStorage.removeItem('terra_save_' + session.uid); } catch (e) {}
+      session = { token: r.token, uid: r.uid, nickname: r.profile ? r.profile.nickname : null };
+      twitchLinked = true; saveSession();
+      Sound.evolve();
+      $('settingsOverlay').classList.remove('open');
+      ui.tab = null; document.body.classList.remove('panel-open');
+      social = null; allyList = null; lbData = null;
+      await enterGame(r.profile, r.save, false);
+      showToast('🔗 Готово! Здесь теперь ваш аккаунт из игры', 4000);
+    } catch (e) {
+      $('twLinkBtn').disabled = false; Sound.error();
+      msg(e.status === 404 ? 'Код не найден или устарел — получите новый в игре' : e.status === 429 ? 'Слишком много попыток — подождите 10 минут' : 'Не удалось привязать — проверьте интернет', true);
+    }
+  };
+  $('twLinkBtn').onclick = go;
+  $('twCodeInput').onkeydown = (e) => { if (e.key === 'Enter') go(); };
+}
+// в игре (APK/сайт): код, чтобы играть этим же аккаунтом в панели на Twitch
+async function openTwitchCode() {
+  const sheet = $('settingsSheet');
+  const head = `<div class="q-head"><div><h2>📺 Играть на Twitch</h2></div><button class="btn-icon" id="setClose" type="button">✕</button></div>`;
+  const bind = () => { $('setClose').onclick = () => $('settingsOverlay').classList.remove('open'); if ($('twBack')) $('twBack').onclick = () => renderSettings(); };
+  sheet.innerHTML = head + '<div class="pf-cover"><div class="spinner"></div></div>'; bind();
+  try {
+    const r = await api('/api/twitch/code', { method: 'POST' });
+    sheet.innerHTML = head + `
+      <div class="set-text">Terra 3D можно играть прямо под трансляцией на Twitch — в панели под видео. Чтобы там был этот же аккаунт (прогресс, друзья, альянс, топ):</div>
+      <ol class="set-steps"><li>Откройте канал на Twitch, где под видео есть панель Terra 3D</li><li>В панели: ⚙️ → «🔗 Привязать аккаунт из игры»</li><li>Введите код:</li></ol>
+      <div class="code-card"><div class="cc-info"><div class="cc-lbl">Код для Twitch · 10 минут</div><div class="cc-code">${esc(r.code)}</div></div>
+        <button class="btn-small soft" id="twCopy" type="button">📋</button></div>
+      <button class="btn-soft" id="twBack" type="button">← Назад</button>`;
+    bind();
+    $('twCopy').onclick = () => copyText(r.code, 'Код скопирован');
+  } catch (e) {
+    sheet.innerHTML = head + `<div class="set-text">Не удалось получить код — проверьте интернет и попробуйте ещё раз.</div><button class="btn-soft" id="twBack" type="button">← Назад</button>`;
+    bind();
+  }
+}
+async function unlinkTwitch() {
+  const ok = await askConfirm(IS_TWITCH
+    ? { title: 'Отвязать аккаунт из игры?', text: 'Здесь, на Twitch, начнётся отдельная игра с нуля. Аккаунт в игре на телефоне и сайте не изменится.', ok: 'Отвязать', danger: true }
+    : { title: 'Отвязать Twitch?', text: 'В панели на Twitch больше не будет этого аккаунта. Прогресс в игре не изменится.', ok: 'Отвязать' });
+  if (!ok) return;
+  try { await api('/api/twitch/unlink', { method: 'POST' }); } catch (e) { showToast('Не удалось — проверьте интернет', 3000); return; }
+  twitchLinked = false;
+  if (IS_TWITCH) {
+    if (canSync()) { try { await Promise.race([syncNow(), new Promise(r => setTimeout(r, 3000))]); } catch (e) {} }
+    playing = false; clearTimeout(syncTimer);
+    ui.tab = null; document.body.classList.remove('panel-open');
+    social = null; allyList = null; lbData = null;
+    twitchLogin();
+  } else { showToast('Twitch отвязан', 2500); }
 }
 
 // ---------- Вход через Google (через браузер: и на сайте, и в APK) ----------
@@ -536,7 +649,7 @@ function setLoginBusy(on, text, cancellable) {
   $('loginCancel').hidden = !(on && cancellable);
   if (text) $('loginLoaderText').innerText = text;
 }
-function showLoginError(msg) { $('loginError').innerText = msg || ''; }
+function showLoginError(msg, hint) { $('loginError').innerText = msg || ''; $('loginError').classList.toggle('hint', !!hint); }
 
 function showLogin(message) {
   closeAllOverlays();
@@ -544,7 +657,13 @@ function showLogin(message) {
   setLoginBusy(false);
   showLoginError(message || '');
   $('demoBtn').hidden = false;
-  $('googleBtn').hidden = !CONFIGURED;
+  $('googleBtn').hidden = !CONFIGURED || IS_TWITCH;
+  $('twitchBtn').hidden = !(IS_TWITCH && CONFIGURED);
+  if (IS_TWITCH) {
+    const viewer = /^U/.test(twitchUser) && !!twitchToken;
+    $('twitchBtn').disabled = !viewer;
+    if (!viewer && !message) showLoginError('Войдите в Twitch (кнопка «Войти» вверху страницы), чтобы играть с сохранением и попасть в топ. Или сыграйте гостем.', true);
+  }
   const apk = $('apkLink');
   apk.hidden = IS_APP || !CONFIG.APK_URL;
   if (!apk.hidden) apk.href = CONFIG.APK_URL;
@@ -621,6 +740,7 @@ async function boot() {
   setLoginBusy(true, 'Загрузка…');
   await resolveApi();
   if (!CONFIGURED) { showLogin(); return; }
+  if (IS_TWITCH) { twitchBoot(); return; }
   adoptMovedSession();
   const fromHash = readAuthFromHash();
   if (fromHash) { await completeLogin(fromHash.code, fromHash.state, fromHash.error); return; }
@@ -630,6 +750,7 @@ async function boot() {
   try {
     const me = await api('/api/me');
     session.nickname = me.profile ? me.profile.nickname : null;
+    twitchLinked = !!me.twitch;
     saveSession();
     await enterGame(me.profile, me.save, false);
   } catch (e) {
@@ -1265,7 +1386,9 @@ async function openAlliance(id) {
   $('allyOverlay').classList.add('open'); Sound.ui();
   let A;
   try { A = await api(`/api/alliance?id=${id}`); } catch (e) {
-    sheet.innerHTML = `<div class="pf-cover"><button class="btn-icon" type="button" onclick="document.getElementById('allyOverlay').classList.remove('open')">✕</button><div class="ally-emblem">🛡️</div><div class="pf-status">${e.status === 404 ? 'Альянс больше не существует' : 'Не удалось загрузить — проверьте интернет'}</div></div>`;
+    // без onclick в разметке: на Twitch такие обработчики запрещены (CSP)
+    sheet.innerHTML = `<div class="pf-cover"><button class="btn-icon" id="allyClose" type="button">✕</button><div class="ally-emblem">🛡️</div><div class="pf-status">${e.status === 404 ? 'Альянс больше не существует' : 'Не удалось загрузить — проверьте интернет'}</div></div>`;
+    $('allyClose').onclick = () => $('allyOverlay').classList.remove('open');
     return;
   }
   renderAllianceSheet(A);
@@ -1497,12 +1620,16 @@ function renderSettings() {
     <div class="sheet-stack">
       ${myProfile ? '<button class="btn-soft" id="setProfile" type="button">👤 Мой профиль и статистика</button>' : ''}
       <button class="btn-soft" id="setCode" type="button">🎁 Ввести промокод</button>
+      ${online && !demo && IS_TWITCH && !twitchLinked ? '<button class="btn-main" id="setTwLink" type="button">🔗 Привязать аккаунт из игры</button>' : ''}
+      ${online && !demo && IS_TWITCH && twitchLinked ? '<div class="set-text">🔗 Привязан аккаунт из игры — прогресс общий с телефоном и сайтом</div><button class="btn-soft" id="setTwUnlink" type="button">Отвязать аккаунт из игры</button>' : ''}
+      ${online && !demo && !IS_TWITCH ? '<button class="btn-soft" id="setTwCode" type="button">📺 Играть на Twitch</button>' : ''}
+      ${online && !demo && !IS_TWITCH && twitchLinked ? '<button class="btn-soft" id="setTwUnlink" type="button">Отвязать Twitch</button>' : ''}
       ${updateInfo ? `<button class="btn-main" id="setUpdate" type="button">⬆️ Обновить до ${esc(updateInfo.version)}</button>` : ''}
-      ${(session || demo) ? `<button class="btn-soft" id="setLogout" type="button">🚪 ${demo ? 'Выйти из гостевой игры' : 'Выйти из аккаунта'}</button>` : ''}
+      ${(session && !IS_TWITCH) || demo ? `<button class="btn-soft" id="setLogout" type="button">🚪 ${demo ? 'Выйти из гостевой игры' : 'Выйти из аккаунта'}</button>` : ''}
       ${playing ? '<button class="btn-soft danger" id="setReset" type="button">♻️ Сбросить прогресс</button>' : ''}
-      ${online ? '<button class="btn-soft danger" id="setDelete" type="button">🗑️ Удалить аккаунт</button>' : ''}
+      ${online && !(IS_TWITCH && twitchLinked) ? '<button class="btn-soft danger" id="setDelete" type="button">🗑️ Удалить аккаунт</button>' : ''}
     </div>
-    <div class="version">Terra 3D · ${MY_BUILD ? 'версия 1.0.' + MY_BUILD : 'веб-версия'} · <a href="privacy.html" target="_blank" rel="noopener" style="color:inherit">Конфиденциальность</a></div>`;
+    <div class="version">Terra 3D · ${MY_BUILD ? 'версия 1.0.' + MY_BUILD : IS_TWITCH ? 'Twitch' : 'веб-версия'} · <a href="privacy.html" target="_blank" rel="noopener" style="color:inherit">Конфиденциальность</a></div>`;
   const close = () => $('settingsOverlay').classList.remove('open');
   $('setClose').onclick = close;
   $('setMusic').onclick = () => { Sound.setMusic(!Sound.music); renderSettings(); };
@@ -1520,6 +1647,9 @@ function renderSettings() {
   if ($('setLogout')) $('setLogout').onclick = () => { close(); logout(); };
   if ($('setReset')) $('setReset').onclick = () => { close(); resetGame(); };
   if ($('setDelete')) $('setDelete').onclick = () => { close(); deleteAccount(); };
+  if ($('setTwLink')) $('setTwLink').onclick = () => openTwitchLink();
+  if ($('setTwCode')) $('setTwCode').onclick = () => openTwitchCode();
+  if ($('setTwUnlink')) $('setTwUnlink').onclick = () => { close(); unlinkTwitch(); };
 }
 function refreshUIFull() { lastPanelSig = ''; buildResourceBar(); refreshUI(); }
 
@@ -1606,10 +1736,13 @@ function resizeCanvas() {
   canvas.height = Math.round(ch * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const stage = $('stage');
+  const short = ch < 620;
+  if (document.body.classList.contains('short') !== short) document.body.classList.toggle('short', short);
   const hudH = $('hud').offsetHeight || 90, dockH = $('dock').offsetHeight || 130;
   stage.style.setProperty('--hud-h', hudH + 'px');
   stage.style.setProperty('--dock-h', dockH + 'px');
-  const sheetH = Math.round(Math.max(230, Math.min(ch * 0.6, ch - hudH - dockH - 170)));
+  // на низком экране панель — от шапки до меню (планету видно, когда панель закрыта)
+  const sheetH = short ? Math.max(160, ch - hudH - dockH - 2) : Math.round(Math.max(230, Math.min(ch * 0.6, ch - hudH - dockH - 170)));
   stage.style.setProperty('--sheet-h', sheetH + 'px');
   const top = hudH + 2, bottom = (ui.tab ? ch - dockH - sheetH : ch - dockH) - 6;
   const areaH = Math.max(80, bottom - top);
@@ -3424,6 +3557,8 @@ function setupEvents() {
   $('userChip').addEventListener('click', openProfile);
   $('demoBtn').addEventListener('click', startDemo);
   $('googleBtn').addEventListener('click', startGoogleLogin);
+  $('twitchBtn').addEventListener('click', twitchLogin);
+  if (IS_TWITCH) $('loginNote').textContent = 'Мы храним только ваш ник и игровой прогресс. Имя и почту из Twitch игра не получает.';
   $('loginCancel').addEventListener('click', () => { takePendingLogin(); showLogin(''); });
   $('nickSubmit').addEventListener('click', submitNick);
   $('nickInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitNick(); });

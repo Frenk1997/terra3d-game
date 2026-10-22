@@ -11,6 +11,7 @@
 #   GITHUB_REPO            (необязательно) «владелец/репозиторий» с релизами APK; в GitHub Actions берётся сам
 #   PROMO_CODES            (необязательно) свои промокоды, по одному в строке
 #   FORCE_UPDATE           (необязательно) 0 — пускать в игру устаревшие версии APK
+#   TWITCH_EXT_SECRET      (необязательно) секрет расширения Twitch — игра в панели под трансляцией
 #   MOVED_TO               (необязательно) https://адрес своего сервера (VPS): игра переехала туда,
 #                          Cloudflare только переадресует (ставит сценарий, когда настроен VPS)
 set -euo pipefail
@@ -96,5 +97,7 @@ printf '%s' "$GOOGLE_CLIENT_SECRET" | "${WRANGLER[@]}" secret put GOOGLE_CLIENT_
 printf '%s' "$SESSION_SECRET" | "${WRANGLER[@]}" secret put SESSION_SECRET
 # свои промокоды (необязательно): секрет PROMO_CODES, формат — в README
 if [ -n "${PROMO_CODES:-}" ]; then printf '%s' "$PROMO_CODES" | "${WRANGLER[@]}" secret put PROMO_CODES; fi
+# секрет расширения Twitch (необязательно): вход зрителей в игру в панели под трансляцией
+if [ -n "${TWITCH_EXT_SECRET:-}" ]; then printf '%s' "$TWITCH_EXT_SECRET" | "${WRANGLER[@]}" secret put TWITCH_EXT_SECRET; fi
 
 echo "Готово. Адрес сервера — строка с workers.dev выше (его нужно вписать в web/config.js)."
