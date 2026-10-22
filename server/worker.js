@@ -15,7 +15,10 @@ const dec = new TextDecoder();
 const SESSION_TTL_SEC = 60 * 60 * 24 * 30; // сессия живёт 30 дней
 const LOGIN_TTL_MS = 10 * 60 * 1000;       // на вход через Google даётся 10 минут
 const MAX_BODY_BYTES = 64 * 1024;
-const MAX_SAVE_BYTES = 20000;
+const MAX_SAVE_BYTES = 40000;
+// Какие поля сохранения хранятся (остальное отбрасывается). Последние пять — старый формат v2.
+const SAVE_KEYS = ['v', 'planet', 'unlocked', 'planets', 'gems', 'perks', 'ppk', 'rebirths', 'ownedCosmetics', 'look', 'lastSave',
+                   'res', 'counts', 'era', 'equippedHat', 'equippedBg'];
 const MAX_REBIRTHS = 100000;
 const SCORE_PER_MIN = 10;        // на сколько очков рейтинг может вырасти за минуту
 const FIRST_SYNC_ALLOWANCE = 25; // стартовый запас для нового аккаунта (перенос старого прогресса)
@@ -317,12 +320,24 @@ async function handleSync(request, sub, env) {
   const s = body && body.save;
   if (!s || typeof s !== 'object') return fail(400, 'bad_request');
 
+  // Версия формата: 2 — одна планета и 6 эпох, 3 — несколько планет и 10 эпох Земли.
+  const v = Number.isInteger(s.v) ? s.v : 2;
+  const stored = parseSave(p);
+  if (stored && (Number(stored.v) || 2) >= 3 && v < 3) {
+    // старое приложение не должно затереть прогресс, сохранённый новой версией
+    return fail(409, 'client_outdated');
+  }
   const rebirths = Math.min(MAX_REBIRTHS, Math.max(0, Number.isInteger(s.rebirths) ? s.rebirths : 0));
-  const era = Math.min(5, Math.max(0, Number.isInteger(s.era) ? s.era : 0));
-  const clean = {
-    v: s.v, res: s.res, counts: s.counts, perks: s.perks, era, rebirths,
-    ownedCosmetics: s.ownedCosmetics, equippedHat: s.equippedHat, equippedBg: s.equippedBg, lastSave: s.lastSave
-  };
+  const eraRaw = v >= 3 ? (s.planets && s.planets.earth && s.planets.earth.era) : s.era;
+  const era = Math.min(v >= 3 ? 9 : 5, Math.max(0, Number.isInteger(eraRaw) ? eraRaw : 0));
+  const clean = {};
+  for (const k of SAVE_KEYS) if (s[k] !== undefined) clean[k] = s[k];
+  clean.v = v;
+  clean.rebirths = rebirths;
+  if (v >= 3) {
+    if (!clean.planets || typeof clean.planets !== 'object') return fail(400, 'bad_request');
+    clean.planets = { ...clean.planets, earth: { ...(clean.planets.earth || {}), era } };
+  } else clean.era = era;
   const raw = JSON.stringify(clean);
   if (raw.length > MAX_SAVE_BYTES) return fail(413, 'save_too_large');
 
