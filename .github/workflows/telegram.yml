@@ -1,0 +1,52 @@
+# Ежедневный пост в Telegram-канал игры (telegram/post.mjs, тексты — telegram/content.mjs).
+# Нужны секреты TELEGRAM_BOT_TOKEN (токен бота от @BotFather) и TELEGRAM_CHANNEL (@имя_канала) — см. SETUP.md.
+# Вручную: Actions → Telegram → Run workflow — можно выбрать вид поста или только посмотреть текст.
+name: Telegram
+
+on:
+  schedule:
+    - cron: '7 15 * * *'   # каждый день в 18:07 по Москве (GitHub может запустить на несколько минут позже)
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: 'Что опубликовать (auto — по расписанию дня недели)'
+        type: choice
+        default: auto
+        options: [auto, release, week, alliances, hall, tip, fact, lore, poll]
+      dry_run:
+        description: 'Только показать пост, не публиковать'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v5
+
+      - name: Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Пост в канал
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          SERVER_DOMAIN: ${{ secrets.SERVER_DOMAIN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          POST_KIND: ${{ inputs.kind || 'auto' }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+        run: |
+          export TERRA_API="$(bash server/vps/public-url.sh)"
+          node telegram/post.mjs
