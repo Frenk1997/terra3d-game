@@ -15,7 +15,11 @@ NODE_VERSION=22.22.0
 CADDY_VERSION=2.10.2
 
 if [ -z "$(printf '%s' "${VPS_HOST:-}" | tr -d '[:space:]')" ]; then
-  echo "VPS не настроен (нет секрета VPS_HOST) — пропускаю"
+  if [ -n "${VPS_PASSWORD:-}${VPS_SSH_KEY:-}" ]; then
+    echo "::warning title=Нет секрета VPS_HOST::Пароль сервера задан, а IP-адрес — нет. Добавьте секрет VPS_HOST (Settings → Secrets and variables → Actions → Repository secrets)."
+  else
+    echo "Свой сервер не настроен: секретов VPS_HOST и VPS_PASSWORD нет (Settings → Secrets and variables → Actions → Repository secrets) — выкладываю только на Cloudflare"
+  fi
   exit 0
 fi
 missing=()

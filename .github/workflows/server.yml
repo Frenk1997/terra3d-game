@@ -25,8 +25,6 @@ jobs:
   deploy:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    env:
-      HAS_VPS: ${{ secrets.VPS_HOST != '' }}
     steps:
       - name: Получить код
         uses: actions/checkout@v5
@@ -39,7 +37,6 @@ jobs:
       # Свой сервер (VPS, например в России): игра работает без VPN. Включается секретом VPS_HOST.
       - name: Выложить на свой сервер (VPS)
         id: vps
-        if: env.HAS_VPS == 'true'
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
