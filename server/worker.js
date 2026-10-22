@@ -1094,22 +1094,27 @@ async function verifyTwitchJwt(token, env) {
   if (!header || header.alg !== 'HS256' || !payload || typeof payload !== 'object') return { fail: 'bad_alg' };
   const data = enc.encode(`${p[0]}.${p[1]}`);
   let ok = false;
-  for (const s of secrets) {
+  for (let i = 0; i < secrets.length && !ok; i++) {
     let raw;
-    try { raw = Uint8Array.from(atob(s), c => c.charCodeAt(0)); } catch (e) { continue; }
+    try { raw = Uint8Array.from(atob(secrets[i]), c => c.charCodeAt(0)); } catch (e) { continue; }
     if (!raw.length) continue;
     const key = await crypto.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
-    if (await crypto.subtle.verify('HMAC', key, sig, data)) { ok = true; break; }
+    if (await crypto.subtle.verify('HMAC', key, sig, data)) ok = 'secret' + (i + 1);
   }
-  if (!ok) return { fail: 'bad_signature' };
+  if (!ok) return { fail: 'bad_signature', claims: twitchClaims(header, payload) };
   if (!Number.isFinite(payload.exp) || payload.exp < Math.floor(Date.now() / 1000)) return { fail: 'expired' };
   const id = String(payload.opaque_user_id || '');
-  return { id, logged: /^U[A-Za-z0-9]{1,64}$/.test(id) };
+  return { id, logged: /^U[A-Za-z0-9]{1,64}$/.test(id), by: ok };
+}
+// для проверки настройки: только тип токена и роль, без идентификаторов зрителя
+function twitchClaims(header, payload) {
+  return { alg: String(header.alg || '').slice(0, 10), role: String(payload.role || '').slice(0, 20),
+    ttl: Number.isFinite(payload.exp) ? Math.round(payload.exp - Date.now() / 1000) : null, channel: !!payload.channel_id };
 }
 async function twitchViewer(request, env) {
   const body = await readJson(request);
   const tw = await verifyTwitchJwt(body && body.token, env);
-  twitchLast = { at: Date.now(), result: tw.fail || (tw.logged ? 'ok' : 'anonymous') };
+  twitchLast = { at: Date.now(), result: tw.fail || (tw.logged ? 'ok' : 'anonymous'), by: tw.by || null, claims: tw.claims || null };
   if (tw.fail === 'no_secret') return { err: fail(503, 'twitch_not_configured') };
   if (tw.fail) return { err: fail(401, 'invalid_twitch_token') };
   if (!tw.logged) return { err: fail(403, 'twitch_login_required') };
