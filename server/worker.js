@@ -20,11 +20,11 @@ const LOGIN_TTL_MS = 10 * 60 * 1000;       // на вход через Google д
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_SAVE_BYTES = 40000;
 // Какие поля сохранения хранятся (остальное отбрасывается). Последние пять — старый формат v2.
-const SAVE_KEYS = ['v', 'planet', 'unlocked', 'planets', 'gems', 'sapphires', 'perks', 'ppk', 'rebirths', 'ownedCosmetics', 'look',
+const SAVE_KEYS = ['v', 'planet', 'unlocked', 'planets', 'gems', 'sapphires', 'perks', 'ppk', 'ppr', 'rebirths', 'boostUntil', 'ownedCosmetics', 'look',
                    'stats', 'quests', 'lastSave', 'res', 'counts', 'era', 'equippedHat', 'equippedBg'];
 const MAX_REBIRTHS = 100000;
-const SCORE_PER_MIN = 10;        // на сколько очков рейтинг может вырасти за минуту
-const FIRST_SYNC_ALLOWANCE = 25; // стартовый запас для нового аккаунта (перенос старого прогресса)
+const SCORE_PER_MIN = 150;       // на сколько очков рейтинг может вырасти за минуту (престиж = 100 очков)
+const FIRST_SYNC_ALLOWANCE = 600; // стартовый запас для нового аккаунта (перенос старого прогресса)
 const APP_SCHEME = 'terra3d';
 const DEFAULT_APP_PACKAGE = 'com.terra3d.game';
 
@@ -367,13 +367,18 @@ const WEEK_MS = 7 * 86400000;
 const WEEK_OFFSET = 4 * 86400000 - 3 * 3600000;
 const weekId = (t) => Math.floor((t - WEEK_OFFSET) / WEEK_MS);
 const weekEnd = (w) => (w + 1) * WEEK_MS + WEEK_OFFSET;
-const PLANET_MAX = { earth: 9, mars: 4, jupiter: 4 };   // последняя эпоха/этап (с нуля)
-const BOARDS = ['all', 'earth', 'mars', 'jupiter'];
-const PLANET_STEP = 100000;                              // счёт планеты = этап * 100000 + постройки
-function planetValue(pid, pl, earthEra) {
+const PLANET_MAX = { earth: 14, mars: 9, jupiter: 9 };  // последняя эпоха/этап (с нуля)
+const PLANET_IDS = ['earth', 'mars', 'jupiter'];
+const BOARDS = ['all', ...PLANET_IDS];
+// Счёт планеты = престижи * 10 000 000 + этап * 100 000 + постройки — сначала престижи, потом этап, потом постройки
+const PLANET_STEP = 100000;
+const PRESTIGE_STEP = 10000000;
+const MAX_PRESTIGE = 100000;
+const clampInt = (x, lo, hi) => Math.min(hi, Math.max(lo, Number.isInteger(x) ? x : 0));
+function planetValue(pid, pl, earthEra, prestige = 0) {
   if (!pl || typeof pl !== 'object') return 0;
   const raw = pid === 'earth' ? earthEra : pl.era;
-  const stage = Math.min(PLANET_MAX[pid], Math.max(0, Number.isInteger(raw) ? raw : 0));
+  const stage = clampInt(raw, 0, PLANET_MAX[pid]);
   let b = 0, n = 0;
   if (pl.counts && typeof pl.counts === 'object') {
     for (const k in pl.counts) {
@@ -382,7 +387,7 @@ function planetValue(pid, pl, earthEra) {
       if (Number.isInteger(c) && c > 0) b += Math.min(c, PLANET_STEP);
     }
   }
-  return stage * PLANET_STEP + Math.min(b, PLANET_STEP - 1);
+  return prestige * PRESTIGE_STEP + stage * PLANET_STEP + Math.min(b, PLANET_STEP - 1);
 }
 
 // ---------- промокоды ----------
@@ -411,7 +416,7 @@ const RES_PLANET = {
   hydrogen: 'jupiter', energy: 'jupiter', helium: 'jupiter', metal: 'jupiter'
 };
 const PROMO_ITEMS = ['bg-founder', 'bg-community', 'bg-admin', 'hat_crown', 'hat_party', 'hat_wizard', 'hat_ufo', 'hat_halo',
-  'bg-nebula', 'bg-deep', 'bg-emerald', 'bg-supernova', 'bg-cyber'];
+  'bg-nebula', 'bg-deep', 'bg-emerald', 'bg-supernova', 'bg-cyber', 'hat_star', 'hat_comet', 'bg-galaxy', 'bg-blackhole', 'bg-rainbow'];
 function normCode(c) {
   const s = String(c || '').toUpperCase().replace(/[\s\-_]+/g, '');
   return /^[A-Z0-9А-ЯЁ]{3,40}$/.test(s) ? s : '';
@@ -528,11 +533,15 @@ async function handleSync(request, sub, env) {
   }
   const rebirths = Math.min(MAX_REBIRTHS, Math.max(0, Number.isInteger(s.rebirths) ? s.rebirths : 0));
   const eraRaw = v >= 3 ? (s.planets && s.planets.earth && s.planets.earth.era) : s.era;
-  const era = Math.min(v >= 3 ? 9 : 5, Math.max(0, Number.isInteger(eraRaw) ? eraRaw : 0));
+  const era = Math.min(v >= 5 ? PLANET_MAX.earth : v >= 3 ? 9 : 5, Math.max(0, Number.isInteger(eraRaw) ? eraRaw : 0));
+  // v5: у каждой планеты свои престижи
+  const ppr = {};
+  for (const pid of PLANET_IDS) ppr[pid] = v >= 5 && s.ppr && typeof s.ppr === 'object' ? clampInt(s.ppr[pid], 0, MAX_PRESTIGE) : 0;
   const clean = {};
   for (const k of SAVE_KEYS) if (s[k] !== undefined) clean[k] = s[k];
   clean.v = v;
   clean.rebirths = rebirths;
+  if (v >= 5) clean.ppr = ppr;
   if (v >= 3) {
     if (!clean.planets || typeof clean.planets !== 'object') return fail(400, 'bad_request');
     clean.planets = { ...clean.planets, earth: { ...(clean.planets.earth || {}), era } };
@@ -544,7 +553,18 @@ async function handleSync(request, sub, env) {
   // но добавляет +10), поэтому при синхронизации счёт не уменьшается: устаревшее устройство не может
   // опустить игрока. Обнулить счёт можно только через /api/reset. Рост ограничен по времени,
   // чтобы нельзя было выставить себе рекорд одним запросом.
-  const claimed = rebirths * 10 + era;
+  // v5: престиж = 100 очков, каждая эпоха/этап любой планеты = 1; раньше: перерождение = 10, эпоха Земли = 1
+  const unlockedList = Array.isArray(clean.unlocked) ? clean.unlocked : [];
+  let claimed, totalPr = 0;
+  if (v >= 5) {
+    let stages = 0;
+    for (const pid of PLANET_IDS) {
+      totalPr += ppr[pid];
+      if (pid === 'earth') stages += era;
+      else if (unlockedList.includes(pid) && clean.planets && clean.planets[pid]) stages += clampInt(clean.planets[pid].era, 0, PLANET_MAX[pid]);
+    }
+    claimed = totalPr * 100 + stages;
+  } else claimed = rebirths * 10 + era;
   const now = Date.now();
   let newScore = p.score;
   if (claimed > p.score) {
@@ -558,7 +578,7 @@ async function handleSync(request, sub, env) {
   const week = weekId(now);
   const stmts = [
     env.DB.prepare('UPDATE players SET save = ?1, score = ?2, rebirths = ?3, era = ?4, updated_at = ?5, score_updated_at = ?6 WHERE sub = ?7')
-      .bind(raw, newScore, Math.floor(newScore / 10), newScore % 10, now, scoreUpdatedAt, sub),
+      .bind(raw, newScore, v >= 5 ? totalPr : Math.floor(newScore / 10), v >= 5 ? era : newScore % 10, now, scoreUpdatedAt, sub),
     // недельный общий топ: прирост очков с первой синхронизации на этой неделе
     env.DB.prepare(`INSERT INTO weekly_scores (week, board, sub, score, base, at) VALUES (?1, 'all', ?2, ?3 - ?4, ?4, ?5)
       ON CONFLICT (week, board, sub) DO UPDATE SET score = ?3 - weekly_scores.base, at = ?5 WHERE ?3 - weekly_scores.base > weekly_scores.score`)
@@ -567,9 +587,9 @@ async function handleSync(request, sub, env) {
   // топы планет: лучший этап + постройки (за всё время и за неделю)
   if (v >= 3 && clean.planets) {
     const unlocked = Array.isArray(clean.unlocked) ? clean.unlocked : [];
-    for (const pid of ['earth', 'mars', 'jupiter']) {
+    for (const pid of PLANET_IDS) {
       if (pid !== 'earth' && !unlocked.includes(pid)) continue;
-      const val = planetValue(pid, clean.planets[pid], era);
+      const val = planetValue(pid, clean.planets[pid], era, ppr[pid]);
       if (val <= 0) continue;
       stmts.push(env.DB.prepare(`INSERT INTO planet_scores (sub, planet, best, best_at) VALUES (?1, ?2, ?3, ?4)
         ON CONFLICT (sub, planet) DO UPDATE SET best = ?3, best_at = ?4 WHERE ?3 > planet_scores.best`).bind(sub, pid, val, now));
@@ -653,7 +673,7 @@ async function handleLeaderboard(request, url, env) {
   }
   let players = rows.results || [];
   if (board !== 'all') {
-    const split = (x) => ({ ...x, era: Math.floor(x.score / PLANET_STEP), buildings: x.score % PLANET_STEP });
+    const split = (x) => ({ ...x, prestige: Math.floor(x.score / PRESTIGE_STEP), era: Math.floor((x.score % PRESTIGE_STEP) / PLANET_STEP), buildings: x.score % PLANET_STEP });
     players = players.map(split);
     if (me) me = split(me);
   }

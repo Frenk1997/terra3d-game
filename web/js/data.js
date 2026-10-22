@@ -2,7 +2,7 @@
 // Числа баланса подобраны симуляцией (см. tools/ в истории разработки).
 'use strict';
 
-const GAME_VERSION = 4; // формат сохранения (4 — сапфиры, квесты, статистика)
+const GAME_VERSION = 5; // формат сохранения (5 — престиж у каждой планеты, сундуки, ускоритель)
 
 const RES = {
   // Земля
@@ -48,7 +48,12 @@ const PLANETS = {
       { name: 'Первые цивилизации',  desc: 'Огонь, земледелие и первые города. Появилась наука.', click: 120,  halo: '#eab308', cost: { solar: 25000, water: 18000, biomass: 12000 } },
       { name: 'Индустриальная эра',  desc: 'Фабрики, железные дороги и смог над мегаполисами.', click: 260,  halo: '#f59e0b', cost: { solar: 90000, biomass: 40000, science: 2000 } },
       { name: 'Космическая эра',     desc: 'Ракеты уходят к звёздам. Открыт путь к Марсу!', click: 550,  halo: '#60a5fa', cost: { solar: 350000, air: 150000, science: 12000 } },
-      { name: 'Звёздная империя',    desc: 'Рой Дайсона питает цивилизацию, покоряющую систему.', click: 1200, halo: '#c084fc', cost: { solar: 1800000, water: 600000, science: 80000 } }
+      { name: 'Звёздная империя',    desc: 'Рой Дайсона питает цивилизацию, покоряющую систему.', click: 1200, halo: '#c084fc', cost: { solar: 1800000, water: 600000, science: 80000 } },
+      { name: 'Орбитальные кольца',  desc: 'Города на кольце вокруг планеты, лифты до самой орбиты.', click: 2600, halo: '#38bdf8', cost: { solar: 12e6, air: 4e6, science: 5e5 } },
+      { name: 'Планетарный разум',   desc: 'Сеть ИИ бережно управляет климатом, океанами и лесами.', click: 5600, halo: '#22d3ee', cost: { solar: 8e7, water: 3e7, science: 3e6 } },
+      { name: 'Звёздные врата',      desc: 'Кольцо-портал на орбите открывает путь к другим звёздам.', click: 12000, halo: '#a78bfa', cost: { solar: 6e8, air: 2.5e8, science: 6e7 } },
+      { name: 'Межзвёздная держава', desc: 'Колонии Земли сияют в соседних звёздных системах.', click: 26000, halo: '#f472b6', cost: { solar: 2e10, biomass: 2e9, science: 2e9 } },
+      { name: 'Галактический маяк',  desc: 'Свет Земли виден с другого края галактики.', click: 56000, halo: '#fde68a', cost: { solar: 1.5e11, water: 5e10, science: 1.5e10 } }
     ],
     buildings: [
       { id: 'solar_collector', tab: 'a', u: 0, name: 'Поглотитель света',   icon: '🔆', desc: 'Улавливает солнечные фотоны.', cost: { solar: 15 }, prod: { solar: 2.5 } },
@@ -68,7 +73,14 @@ const PLANETS = {
       { id: 'eco_city',        tab: 'c', u: 7, name: 'Мегаполисы',          icon: '🏙️', desc: 'Огни городов видны из космоса.', cost: { solar: 250000, air: 80000, science: 6000 }, prod: { science: 250, solar: 1200, biomass: 600 } },
       { id: 'spaceport',       tab: 'c', u: 8, name: 'Космодром',           icon: '🚀', desc: 'Запуски к другим мирам.', cost: { solar: 900000, science: 30000 }, prod: { science: 1200, solar: 6000 } },
       { id: 'orbital_mirror',  tab: 'c', u: 8, name: 'Орбитальные зеркала', icon: '🛰️', desc: 'Собирают свет на орбите.', cost: { solar: 2000000, science: 80000 }, prod: { solar: 25000, air: 5000 } },
-      { id: 'dyson_swarm',     tab: 'c', u: 9, name: 'Рой Дайсона',         icon: '🌞', desc: 'Мегаструктура вокруг Солнца.', cost: { solar: 15000000, science: 800000 }, prod: { solar: 250000, water: 60000, air: 60000, science: 20000 } }
+      { id: 'dyson_swarm',     tab: 'c', u: 9, name: 'Рой Дайсона',         icon: '🌞', desc: 'Мегаструктура вокруг Солнца.', cost: { solar: 15000000, science: 800000 }, prod: { solar: 250000, water: 60000, air: 60000, science: 20000 } },
+      { id: 'weather_net',     tab: 'a', u: 10, name: 'Погодная сеть',      icon: '⛈️', desc: 'Спутники управляют дождями и ветрами.', cost: { air: 2e7, water: 2e7 }, prod: { air: 7e5, water: 6e5 } },
+      { id: 'orbital_ring',    tab: 'c', u: 10, name: 'Орбитальное кольцо', icon: '⭕', desc: 'Город длиной в экватор.', cost: { solar: 6e7, science: 2.5e6 }, prod: { solar: 1.4e6, science: 6e4 } },
+      { id: 'gaia_ai',         tab: 'b', u: 11, name: 'Разум Геи',          icon: '🧠', desc: 'ИИ, который заботится о биосфере.', cost: { air: 4e7, science: 1.2e7 }, prod: { biomass: 1e6, air: 7e5, water: 7e5, science: 1.8e5 } },
+      { id: 'fusion_ocean',    tab: 'a', u: 12, name: 'Термоядерные моря',  icon: '♨️', desc: 'Океаны дают энергию синтеза.', cost: { water: 3e8, solar: 3e8 }, prod: { water: 9e6, solar: 7e6, air: 2.5e6 } },
+      { id: 'ark_gardens',     tab: 'b', u: 12, name: 'Сады-ковчеги',       icon: '🌴', desc: 'Парящие сады со всей жизнью Земли.', cost: { water: 1.5e8, air: 1e8 }, prod: { biomass: 6e6, air: 3.5e6 } },
+      { id: 'stargate',        tab: 'c', u: 13, name: 'Звёздные врата',     icon: '⛩️', desc: 'Портал к другим звёздам.', cost: { solar: 5e10, science: 4e9 }, prod: { science: 6e7, solar: 6e8, water: 2e8 } },
+      { id: 'beacon',          tab: 'c', u: 14, name: 'Галактический маяк', icon: '🗼', desc: 'Луч, видимый всей галактике.', cost: { solar: 6e11, science: 6e10 }, prod: { solar: 6e9, water: 1.5e9, air: 1.5e9, biomass: 6e8, science: 6e8 } }
     ],
     perks: [
       { id: 'gaia',      name: 'Дыхание Геи',     icon: '🌿', type: 'prod',  step: 0.25, max: 5, base: 1, scale: 1.8, desc: 'Постройки Земли производят больше.' },
@@ -93,7 +105,12 @@ const PLANETS = {
       { name: 'Первая база',         desc: 'Жилые модули и марсоходы. Колония растёт.', click: 5,  halo: '#f97316', cost: { regolith: 400, ice: 150 } },
       { name: 'Ледяные шахты',       desc: 'Подлёдная вода превращается в топливо и воздух.', click: 12, halo: '#fb923c', cost: { regolith: 2500, ice: 1200, iron: 300 } },
       { name: 'Города под куполами', desc: 'Под прозрачными куполами цветут сады.', click: 30, halo: '#fdba74', cost: { ice: 8000, iron: 9000, oxygen: 2500 } },
-      { name: 'Зелёный Марс',        desc: 'Атмосфера, моря и голубое небо. Марс ожил!', click: 80, halo: '#5eead4', cost: { regolith: 120000, iron: 50000, oxygen: 40000 } }
+      { name: 'Зелёный Марс',        desc: 'Атмосфера, моря и голубое небо. Марс ожил!', click: 80, halo: '#5eead4', cost: { regolith: 120000, iron: 50000, oxygen: 40000 } },
+      { name: 'Марсианские леса',    desc: 'Сосны и мхи покрыли равнины, реки потекли снова.', click: 200, halo: '#4ade80', cost: { ice: 8e5, oxygen: 6e5, regolith: 2e5 } },
+      { name: 'Столица на Олимпе',   desc: 'На склонах величайшего вулкана вырос мегаполис.', click: 480, halo: '#facc15', cost: { oxygen: 2e7, ice: 1e7, iron: 4e5 } },
+      { name: 'Космический лифт',    desc: 'Трос до орбиты: грузы летят в космос почти даром.', click: 1100, halo: '#94a3b8', cost: { oxygen: 1.2e8, ice: 8e7, regolith: 3e7 } },
+      { name: 'Кольцо Фобоса',       desc: 'Спутник превратили в сияющее кольцо станций.', click: 2600, halo: '#c084fc', cost: { regolith: 1.5e9, iron: 8e8, oxygen: 6e8 } },
+      { name: 'Второй дом',          desc: 'Марс стал цветущим миром — вторым домом людей.', click: 6000, halo: '#2dd4bf', cost: { regolith: 2e10, ice: 8e9, oxygen: 8e9 } }
     ],
     buildings: [
       { id: 'rover',      tab: 'a', u: 0, name: 'Марсоход',         icon: '🚙', desc: 'Собирает реголит.', cost: { regolith: 20 }, prod: { regolith: 3 } },
@@ -105,7 +122,12 @@ const PLANETS = {
       { id: 'reactor',    tab: 'b', u: 3, name: 'Реактор',          icon: '⚛️', desc: 'Энергия для плавильных печей.', cost: { iron: 6000, oxygen: 2000 }, prod: { regolith: 150, iron: 40 } },
       { id: 'dome',       tab: 'c', u: 3, name: 'Купол-город',      icon: '🌐', desc: 'Сады под прозрачным куполом.', cost: { iron: 12000, oxygen: 5000 }, prod: { oxygen: 80, ice: 50 } },
       { id: 'magnet',     tab: 'c', u: 4, name: 'Магнитный щит',    icon: '🧲', desc: 'Защищает атмосферу от солнечного ветра.', cost: { regolith: 150000, iron: 60000 }, prod: { oxygen: 500, ice: 300, iron: 100 } },
-      { id: 'mars_seas',  tab: 'c', u: 4, name: 'Марсианские моря', icon: '🌊', desc: 'Растопленные полюса стали морями.', cost: { ice: 200000, oxygen: 80000 }, prod: { ice: 1500, oxygen: 900 } }
+      { id: 'mars_seas',  tab: 'c', u: 4, name: 'Марсианские моря', icon: '🌊', desc: 'Растопленные полюса стали морями.', cost: { ice: 200000, oxygen: 80000 }, prod: { ice: 1500, oxygen: 900 } },
+      { id: 'mars_forest', tab: 'c', u: 5, name: 'Марсианский лес',  icon: '🌳', desc: 'Леса дышат кислородом.', cost: { ice: 1.5e6, regolith: 3e5 }, prod: { oxygen: 9000, ice: 5000, regolith: 1500 } },
+      { id: 'olympus',     tab: 'b', u: 6, name: 'Город на Олимпе',  icon: '🏔️', desc: 'Столица на вершине вулкана.', cost: { oxygen: 1e7, ice: 5e6 }, prod: { regolith: 8e4, iron: 3e4 } },
+      { id: 'elevator',    tab: 'a', u: 7, name: 'Космический лифт', icon: '🚡', desc: 'Кабины скользят по тросу до орбиты.', cost: { regolith: 8e7, ice: 4e7 }, prod: { iron: 3.5e5, oxygen: 3e5, regolith: 2e5 } },
+      { id: 'phobos_ring', tab: 'c', u: 8, name: 'Кольцо Фобоса',    icon: '💍', desc: 'Станции на обломках спутника.', cost: { iron: 6e8, oxygen: 2e8 }, prod: { regolith: 3e6, ice: 3e6, oxygen: 3e6, iron: 1e6 } },
+      { id: 'mars_home',   tab: 'b', u: 9, name: 'Второй дом',       icon: '🏡', desc: 'Миллиарды жителей нового мира.', cost: { regolith: 6e9, iron: 3e9 }, prod: { regolith: 2.5e7, oxygen: 3e7, ice: 3e7, iron: 1e7 } }
     ],
     perks: [
       { id: 'dust_filters', name: 'Пылевые фильтры',   icon: '🌪️', type: 'prod',  step: 0.25, max: 5, base: 2, scale: 1.8, desc: 'Постройки Марса производят больше.' },
@@ -130,7 +152,12 @@ const PLANETS = {
       { name: 'Атмосферные зонды',  desc: 'Зонды ныряют в облака и собирают газ.', click: 8,   halo: '#fbbf24', cost: { hydrogen: 600, energy: 200 } },
       { name: 'Парящие станции',    desc: 'Города на аэростатах дрейфуют в облаках.', click: 20,  halo: '#fcd34d', cost: { hydrogen: 5000, energy: 2500, helium: 300 } },
       { name: 'Гелиевые фабрики',   desc: 'Гелий-3 — топливо для звёздных кораблей.', click: 50,  halo: '#c4b5fd', cost: { energy: 25000, helium: 6000, metal: 600 } },
-      { name: 'Повелитель бурь',    desc: 'Энергия бурь Юпитера служит всей системе.', click: 130, halo: '#a78bfa', cost: { hydrogen: 400000, helium: 80000, metal: 25000 } }
+      { name: 'Повелитель бурь',    desc: 'Энергия бурь Юпитера служит всей системе.', click: 130, halo: '#a78bfa', cost: { hydrogen: 400000, helium: 80000, metal: 25000 } },
+      { name: 'Заводы на лунах',    desc: 'Ио, Европа и Каллисто превратились в заводы.', click: 330, halo: '#fb923c', cost: { hydrogen: 1.5e6, energy: 2e6, metal: 3e5 } },
+      { name: 'Облачные города',    desc: 'Огни парящих городов мерцают в вечных бурях.', click: 780, halo: '#fde047', cost: { hydrogen: 1.5e7, helium: 1e7, energy: 2e7 } },
+      { name: 'Гравитационная праща', desc: 'Юпитер разгоняет корабли к краю системы.', click: 1800, halo: '#60a5fa', cost: { energy: 1.2e8, helium: 6e7, metal: 3e7 } },
+      { name: 'Зажжённое ядро',     desc: 'В недрах гиганта зажгли термоядерное пламя.', click: 4200, halo: '#f97316', cost: { hydrogen: 2e9, energy: 6e8, metal: 2e8 } },
+      { name: 'Второе Солнце',      desc: 'Юпитер вспыхнул звездой — в системе два солнца!', click: 10000, halo: '#fef08a', cost: { hydrogen: 6e9, helium: 1.5e9, metal: 8e8 } }
     ],
     buildings: [
       { id: 'scoop',         tab: 'a', u: 0, name: 'Газозаборник',            icon: '🌫️', desc: 'Черпает водород из облаков.', cost: { hydrogen: 25 }, prod: { hydrogen: 3.5 } },
@@ -141,7 +168,12 @@ const PLANETS = {
       { id: 'magneto',       tab: 'b', u: 2, name: 'Магнитосферный генератор', icon: '📡', desc: 'Самая мощная магнитосфера системы.', cost: { energy: 8000, helium: 1500 }, prod: { energy: 120, metal: 4 } },
       { id: 'io_mine',       tab: 'c', u: 3, name: 'Рудники Ио',              icon: '🌕', desc: 'Вулканический спутник полон металлов.', cost: { energy: 35000, helium: 9000 }, prod: { metal: 25 } },
       { id: 'europa',        tab: 'c', u: 3, name: 'База на Европе',          icon: '🌑', desc: 'Под ледяной коркой — океан.', cost: { hydrogen: 60000, metal: 1500 }, prod: { hydrogen: 500, helium: 70 } },
-      { id: 'energy_ring',   tab: 'c', u: 4, name: 'Энергетическое кольцо',   icon: '💫', desc: 'Кольцо станций вокруг гиганта.', cost: { helium: 120000, metal: 60000 }, prod: { energy: 4000, helium: 600, metal: 150 } }
+      { id: 'energy_ring',   tab: 'c', u: 4, name: 'Энергетическое кольцо',   icon: '💫', desc: 'Кольцо станций вокруг гиганта.', cost: { helium: 120000, metal: 60000 }, prod: { energy: 4000, helium: 600, metal: 150 } },
+      { id: 'moon_forge',    tab: 'c', u: 5, name: 'Лунные заводы',           icon: '🛠️', desc: 'Плавильни на вулканах Ио.', cost: { energy: 4e6, metal: 6e5 }, prod: { hydrogen: 6000, metal: 3500, helium: 2500 } },
+      { id: 'cloud_city',    tab: 'a', u: 6, name: 'Облачный город',          icon: '☁️', desc: 'Мегаполис на воздушных шарах.', cost: { helium: 1.5e7, energy: 1e7 }, prod: { hydrogen: 4.5e5, helium: 7e4 } },
+      { id: 'sling',         tab: 'b', u: 7, name: 'Гравитационная праща',    icon: '🎯', desc: 'Разгоняет корабли гравитацией.', cost: { hydrogen: 3e8, helium: 5e7 }, prod: { energy: 2.5e6, metal: 3e5, hydrogen: 1e6 } },
+      { id: 'core_igniter',  tab: 'b', u: 8, name: 'Зажигатель ядра',         icon: '💥', desc: 'Термоядерное пламя в недрах.', cost: { energy: 2e9, metal: 3e8 }, prod: { energy: 1.6e7, hydrogen: 1.2e7 } },
+      { id: 'second_sun',    tab: 'c', u: 9, name: 'Второе Солнце',           icon: '🌟', desc: 'Юпитер светит, как звезда.', cost: { energy: 2e10, helium: 5e9 }, prod: { hydrogen: 1.2e8, energy: 1.2e8, helium: 2.5e7, metal: 2e7 } }
     ],
     perks: [
       { id: 'fusion',     name: 'Термоядерный синтез', icon: '☢️', type: 'prod',  step: 0.25, max: 5, base: 3, scale: 1.8, desc: 'Постройки Юпитера производят больше.' },
@@ -183,21 +215,53 @@ const COSMETICS = [
   // Только по промокоду (code: true — не продаются)
   { id: 'bg-founder',     type: 'bg', name: 'Первопроходец',       icon: '🌟', desc: 'Золотая пыль первых звёзд.', code: true, swatch: 'radial-gradient(circle at 50% 30%, #a16207, #1c1203 70%)' },
   { id: 'bg-community',   type: 'bg', name: 'Сообщество',          icon: '💬', desc: 'Для своих — из пака сообщества.', code: true, swatch: 'linear-gradient(160deg, #312e81, #6d28d9 50%, #0b1026)' },
-  { id: 'bg-admin',       type: 'bg', name: 'Командный центр',     icon: '🛡️', desc: 'Цвета администрации игры.', code: true, swatch: 'linear-gradient(160deg, #450a0a, #0f172a 55%, #b91c1c)' }
+  { id: 'bg-admin',       type: 'bg', name: 'Командный центр',     icon: '🛡️', desc: 'Цвета администрации игры.', code: true, swatch: 'linear-gradient(160deg, #450a0a, #0f172a 55%, #b91c1c)' },
+  // Только из сундуков (chest: true)
+  { id: 'hat_star',       type: 'hat', name: 'Путеводная звезда',  icon: '⭐', desc: 'Сияющая звезда над планетой.', chest: true },
+  { id: 'hat_comet',      type: 'hat', name: 'Хвост кометы',       icon: '☄️', desc: 'Огненный хвост, будто планета летит.', chest: true },
+  { id: 'bg-galaxy',      type: 'bg',  name: 'Спиральная галактика', icon: '🌀', desc: 'Рукава галактики за планетой.', chest: true, swatch: 'radial-gradient(circle at 50% 45%, #fde68a 0 4%, #7c3aed 18%, #1e1b4b 45%, #020617 70%)' },
+  { id: 'bg-blackhole',   type: 'bg',  name: 'Чёрная дыра',        icon: '🕳️', desc: 'Огненный диск вокруг бездны.', chest: true, swatch: 'radial-gradient(circle at 50% 50%, #000 0 14%, #f97316 17%, #7c2d12 26%, #0c0a09 55%)' },
+  { id: 'bg-rainbow',     type: 'bg',  name: 'Радужная туманность', icon: '🌈', desc: 'Все цвета космоса сразу.', chest: true, swatch: 'linear-gradient(135deg, #be185d, #7c3aed 30%, #0ea5e9 60%, #10b981 85%)' }
 ];
 
-// Перерождение: каждое следующее требует больше. Номер перерождения n = 0, 1, 2…
-// Земля: 5-я эпоха, затем +1 за каждое (до 10-й); дальше этапы Марса (2→5), потом Юпитера (2→5).
-function rebirthRequirements(n) {
-  const r = { earth: Math.min(9, 4 + n) };
-  if (n >= 6) r.mars = Math.min(4, n - 5);
-  if (n >= 10) r.jupiter = Math.min(4, n - 9);
-  return r;
+// ===== Престиж планеты =====
+// У каждой планеты свои престижи. n — сколько престижей уже сделано на этой планете.
+// Цели растут: этап выше на 1 за каждый престиж, построек больше, а когда этапы кончились — копить ресурс.
+const PRESTIGE = {
+  earth:   { baseStage: 4, buildBase: 30, buildStep: 22, buildSq: 3, gems: 0 },
+  mars:    { baseStage: 3, buildBase: 25, buildStep: 18, buildSq: 3, gems: 2 },
+  jupiter: { baseStage: 3, buildBase: 25, buildStep: 18, buildSq: 3, gems: 4 }
+};
+function prestigeGoals(pid, n) {
+  const P = PLANETS[pid], C = PRESTIGE[pid], max = P.eras.length - 1;
+  const goals = [];
+  const want = C.baseStage + n;
+  goals.push({ kind: 'stage', need: Math.min(max, want) });
+  goals.push({ kind: 'build', need: C.buildBase + C.buildStep * n + C.buildSq * n * n });
+  if (want > max) {
+    // этапы кончились — копим ресурс тапа; каждый следующий престиж ×4
+    const base = P.eras[max].cost[P.clickRes] || Object.values(P.eras[max].cost)[0];
+    goals.push({ kind: 'res', res: P.clickRes, need: Math.round(base * 2 * Math.pow(4, want - max - 1)) });
+  }
+  return goals;
 }
+// Награда кристаллами за престиж
+function prestigeGems(pid, n, stage) { return 2 + Math.floor(stage / 2) + Math.floor(n * 0.75) + PRESTIGE[pid].gems; }
 
 // Количество за одну покупку построек
 const BUY_MODES = [1, 10, 50, 100, 'max'];
 const BUILD_GROWTH = 1.18;   // каждая следующая постройка дороже на 18%
+
+// ===== Сундуки (магазин за сапфиры) =====
+// Ресурсы в сундуке — это доход текущей планеты за boostMin минут (так награда растёт вместе с игроком)
+const CHESTS = [
+  { id: 'small',  name: 'Малый сундук',        icon: '🎁', price: 5,  color: '#38bdf8', desc: 'Кристаллы и ресурсы. Иногда — ускоритель.',
+    gems: [2, 5], resMin: 10, boostChance: 0.25, boostMin: 10, itemChance: 0.08 },
+  { id: 'big',    name: 'Большой сундук',      icon: '🧰', price: 15, color: '#a78bfa', desc: 'Много кристаллов, ресурсы, ускоритель, шанс на редкий образ.',
+    gems: [7, 14], resMin: 30, boostChance: 0.6, boostMin: 20, itemChance: 0.3 },
+  { id: 'legend', name: 'Легендарный сундук',  icon: '👑', price: 40, color: '#fbbf24', desc: 'Гарантированный редкий образ, кристаллы и ускоритель на час.',
+    gems: [18, 32], resMin: 60, boostChance: 1, boostMin: 60, itemChance: 1 }
+];
 
 // ===== Квесты =====
 // Ежедневные: каждый день выбираются 3 задания. stat — счётчик из статистики игрока, прирост за день.
@@ -223,17 +287,22 @@ const ACHIEVEMENTS = [
   { id: 'a_ast10',   icon: '🛡️', name: 'Щит планеты',         desc: 'Сбейте 10 астероидов',             kind: 'stat', key: 'asteroids', goal: 10,   reward: 2 },
   { id: 'a_gold',    icon: '✨', name: 'Золотая лихорадка',    desc: 'Сбейте золотой астероид',          kind: 'stat', key: 'golden',    goal: 1,    reward: 2 },
   { id: 'a_taps',    icon: '👆', name: 'Неутомимый палец',     desc: 'Сделайте 5 000 тапов',              kind: 'stat', key: 'taps',      goal: 5000, reward: 2 },
-  { id: 'a_reb1',    icon: '🌀', name: 'Новое начало',         desc: 'Совершите первое перерождение',     kind: 'rebirths',               goal: 1,    reward: 3 },
+  { id: 'a_reb1',    icon: '🌀', name: 'Новое начало',         desc: 'Совершите первый престиж',          kind: 'rebirths',               goal: 1,    reward: 3 },
   { id: 'a_build500',icon: '🏘️', name: 'Архитектор',          desc: 'Постройте 500 зданий',              kind: 'stat', key: 'built',     goal: 500,  reward: 2 },
   { id: 'a_era10',   icon: '🌞', name: 'Звёздная империя',     desc: 'Достигните 10-й эпохи Земли',       kind: 'era',  key: 'earth',     goal: 10,   reward: 5 },
   { id: 'a_mars',    icon: '🔴', name: 'Первые на Марсе',      desc: 'Снарядите экспедицию на Марс',      kind: 'planet', key: 'mars',    goal: 1,    reward: 3 },
   { id: 'a_ast50',   icon: '☄️', name: 'Гроза астероидов',     desc: 'Сбейте 50 астероидов',             kind: 'stat', key: 'asteroids', goal: 50,   reward: 4 },
-  { id: 'a_reb5',    icon: '♾️', name: 'Вечный цикл',          desc: 'Совершите 5 перерождений',          kind: 'rebirths',               goal: 5,    reward: 5 },
+  { id: 'a_reb5',    icon: '♾️', name: 'Вечный цикл',          desc: 'Совершите 5 престижей',             kind: 'rebirths',               goal: 5,    reward: 5 },
   { id: 'a_mars5',   icon: '🌊', name: 'Зелёный Марс',         desc: 'Достигните 5-го этапа Марса',       kind: 'era',  key: 'mars',      goal: 5,    reward: 4 },
   { id: 'a_jup',     icon: '🟠', name: 'К гиганту',            desc: 'Снарядите экспедицию на Юпитер',    kind: 'planet', key: 'jupiter', goal: 1,    reward: 5 },
   { id: 'a_build5k', icon: '🌆', name: 'Градостроитель',       desc: 'Постройте 5 000 зданий',            kind: 'stat', key: 'built',     goal: 5000, reward: 4 },
-  { id: 'a_jup5',    icon: '⚡', name: 'Повелитель бурь',      desc: 'Достигните 5-го этапа Юпитера',     kind: 'era',  key: 'jupiter',   goal: 5,    reward: 6 }
+  { id: 'a_jup5',    icon: '⚡', name: 'Повелитель бурь',      desc: 'Достигните 5-го этапа Юпитера',     kind: 'era',  key: 'jupiter',   goal: 5,    reward: 6 },
+  { id: 'a_chest',   icon: '🎁', name: 'Кладоискатель',        desc: 'Откройте сундук',                   kind: 'stat', key: 'chests',    goal: 1,    reward: 1 },
+  { id: 'a_reb15',   icon: '🌌', name: 'Повелитель циклов',    desc: 'Совершите 15 престижей',            kind: 'rebirths',               goal: 15,   reward: 8 },
+  { id: 'a_era15',   icon: '🗼', name: 'Галактический маяк',   desc: 'Достигните 15-й эпохи Земли',       kind: 'era',  key: 'earth',     goal: 15,   reward: 8 },
+  { id: 'a_mars10',  icon: '🏡', name: 'Второй дом',           desc: 'Достигните 10-го этапа Марса',      kind: 'era',  key: 'mars',      goal: 10,   reward: 8 },
+  { id: 'a_jup10',   icon: '🌟', name: 'Второе Солнце',        desc: 'Достигните 10-го этапа Юпитера',    kind: 'era',  key: 'jupiter',   goal: 10,   reward: 10 }
 ];
 
 // Для Node (симуляция баланса и тесты)
-if (typeof module !== 'undefined') module.exports = { GAME_VERSION, RES, PLANETS, PLANET_ORDER, GLOBAL_PERKS, COSMETICS, rebirthRequirements, BUY_MODES, BUILD_GROWTH, DAILY_QUESTS, DAILY_COUNT, DAILY_BONUS, ACHIEVEMENTS };
+if (typeof module !== 'undefined') module.exports = { GAME_VERSION, RES, PLANETS, PLANET_ORDER, GLOBAL_PERKS, COSMETICS, PRESTIGE, prestigeGoals, prestigeGems, CHESTS, BUY_MODES, BUILD_GROWTH, DAILY_QUESTS, DAILY_COUNT, DAILY_BONUS, ACHIEVEMENTS };

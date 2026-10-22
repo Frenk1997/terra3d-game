@@ -52,7 +52,7 @@ function defaultPlanet(pid) {
   return { res, counts, era: 0 };
 }
 // Статистика за всё время (не сбрасывается перерождением) — для квестов
-const STAT_KEYS = ['taps', 'built', 'asteroids', 'golden', 'evolves', 'perks', 'travels', 'playSec'];
+const STAT_KEYS = ['taps', 'built', 'asteroids', 'golden', 'evolves', 'perks', 'travels', 'playSec', 'chests'];
 function defaultStats() {
   const st = { maxEra: {} };
   STAT_KEYS.forEach(k => st[k] = 0);
@@ -65,9 +65,11 @@ function defaultState() {
   PLANET_ORDER.forEach(pid => { planets[pid] = defaultPlanet(pid); ppk[pid] = {}; look[pid] = { hat: null, bg: null }; });
   const perks = {};
   GLOBAL_PERKS.forEach(p => perks[p.id] = 0);
+  const ppr = {};
+  PLANET_ORDER.forEach(pid => ppr[pid] = 0);
   return {
     v: GAME_VERSION, planet: 'earth', unlocked: ['earth'], planets, gems: 0, sapphires: 0,
-    perks, ppk, rebirths: 0, ownedCosmetics: [], look, stats: defaultStats(), quests: defaultQuests(), lastSave: Date.now()
+    perks, ppk, ppr, rebirths: 0, boostUntil: 0, ownedCosmetics: [], look, stats: defaultStats(), quests: defaultQuests(), lastSave: Date.now()
   };
 }
 let state = defaultState();
@@ -88,7 +90,7 @@ function migrateV2(p) {
   e.era = ERA_MAP[Math.min(5, int(p.era))];
   s.gems = num(old.gems);
   s.perks = { ...s.perks, ...(p.perks || {}) };
-  s.rebirths = int(p.rebirths);
+  s.ppr.earth = int(p.rebirths);
   s.ownedCosmetics = Array.isArray(p.ownedCosmetics) ? p.ownedCosmetics : [];
   s.look.earth = { hat: p.equippedHat || null, bg: (p.equippedBg && p.equippedBg !== 'bg-default') ? p.equippedBg : null };
   s.lastSave = Number(p.lastSave) || Date.now();
@@ -112,7 +114,10 @@ function applySave(p) {
       });
       d.gems = num(p.gems);
       GLOBAL_PERKS.forEach(k => { d.perks[k.id] = Math.min(k.max, int((p.perks || {})[k.id])); });
-      d.rebirths = int(p.rebirths);
+      // престиж у каждой планеты (v5); раньше было общее перерождение — оно становится престижем Земли
+      if (p.v >= 5 && p.ppr && typeof p.ppr === 'object') PLANET_ORDER.forEach(pid => d.ppr[pid] = Math.min(100000, int(p.ppr[pid])));
+      else d.ppr.earth = int(p.rebirths);
+      d.boostUntil = Math.min(Date.now() + 6 * 3600000, num(p.boostUntil));
       d.unlocked = Array.isArray(p.unlocked) ? PLANET_ORDER.filter(x => x === 'earth' || p.unlocked.includes(x)) : ['earth'];
       d.planet = d.unlocked.includes(p.planet) ? p.planet : 'earth';
       d.ownedCosmetics = Array.isArray(p.ownedCosmetics) ? p.ownedCosmetics : [];
@@ -130,6 +135,7 @@ function applySave(p) {
       }
     }
   }
+  s.rebirths = totalPrestige(s);
   // лучшие эпохи — не ниже текущих (для старых сохранений)
   PLANET_ORDER.forEach(pid => { if (s.unlocked.includes(pid)) s.stats.maxEra[pid] = Math.max(s.stats.maxEra[pid] || 0, s.planets[pid].era); });
   s.ownedCosmetics = s.ownedCosmetics.filter(id => COSMETICS.some(c => c.id === id));
@@ -157,10 +163,15 @@ function planetPerkBonus(pid, type) {
   PL(pid).perks.forEach(p => { if (p.type === type) b += p.step * ppk(pid, p.id); });
   return b;
 }
-function rebirthMult() { return 1 + state.rebirths; }
+function totalPrestige(st = state) { return PLANET_ORDER.reduce((a, pid) => a + ((st.ppr && st.ppr[pid]) || 0), 0); }
+function prestigeCount(pid) { return (state.ppr && state.ppr[pid]) || 0; }
+// множитель планеты: каждый её престиж +100% к доходу и тапу на ней
+function planetMult(pid = cur()) { return 1 + prestigeCount(pid); }
+function boostLeft() { return Math.max(0, (state.boostUntil || 0) - Date.now()); }
+function boostMult() { return boostLeft() > 0 ? 2 : 1; }
 function speedMult() { return 1 + perk('time_warp') * 0.25; }
-function prodMult(pid) { return rebirthMult() * speedMult() * (1 + planetPerkBonus(pid, 'prod')); }
-function clickGain(pid = cur()) { return Math.ceil(PL(pid).eras[ps(pid).era].click * rebirthMult() * (1 + planetPerkBonus(pid, 'click'))); }
+function prodMult(pid) { return planetMult(pid) * speedMult() * boostMult() * (1 + planetPerkBonus(pid, 'prod')); }
+function clickGain(pid = cur()) { return Math.ceil(PL(pid).eras[ps(pid).era].click * planetMult(pid) * boostMult() * (1 + planetPerkBonus(pid, 'click'))); }
 function costMult(pid) { return Math.max(0.3, (1 - perk('cheap_build') * 0.10) * (1 - planetPerkBonus(pid, 'cheap'))); }
 function rollCrit() { const l = perk('crit_solar'); return (l > 0 && Math.random() < 0.15) ? (2 + l) : 1; }
 
@@ -236,25 +247,21 @@ function unlockInfo(pid) {
   return { reqs, cost, ready: reqs.every(r => r.ok) && canPay(cost) };
 }
 
-// Условия следующего перерождения: каждое требует больше эпох и этапов
-function rebirthReqList() {
-  const R = rebirthRequirements(state.rebirths);
-  return PLANET_ORDER.filter(pid => R[pid] !== undefined).map(pid => {
-    const need = R[pid], P = PL(pid);
-    return { pid, need, ok: isUnlocked(pid) && ps(pid).era >= need,
-      label: `${P.icon} ${P.name}: ${P.stageWord.toLowerCase()} ${need + 1} «${P.eras[need].name}»`,
-      have: isUnlocked(pid) ? ps(pid).era + 1 : 0 };
+// ---------- Престиж планеты ----------
+// У каждой планеты свои престижи и свои цели; чем больше престижей, тем выше цели (см. prestigeGoals в data.js)
+function planetBuildings(pid) { return Object.values(ps(pid).counts).reduce((a, b) => a + b, 0); }
+function prestigeInfo(pid = cur()) {
+  const n = prestigeCount(pid), P = PL(pid), st = ps(pid);
+  const goals = prestigeGoals(pid, n).map(g => {
+    if (g.kind === 'stage') return { ...g, label: `${P.stageWord} ${g.need + 1} «${P.eras[g.need].name}»`, have: st.era + 1, goal: g.need + 1, ok: st.era >= g.need };
+    if (g.kind === 'build') { const b = planetBuildings(pid); return { ...g, label: `Построек на планете: ${fmt(g.need)}`, have: b, goal: g.need, ok: b >= g.need }; }
+    const v = st.res[g.res] || 0;
+    return { ...g, label: `Накопить ${fmt(g.need)} ${RES[g.res].icon} ${RES[g.res].name.toLowerCase()}`, have: v, goal: g.need, ok: v >= g.need };
   });
+  const ready = isUnlocked(pid) && goals.every(g => g.ok);
+  return { pid, n, goals, ready, gems: prestigeGems(pid, n, st.era), mult: 1 + n, nextMult: 2 + n };
 }
-function canRebirth() { return rebirthReqList().every(r => r.ok); }
-
-function getRebirthGemsReward() {
-  if (!canRebirth()) return 0;
-  const e = ps('earth').era;
-  let r = Math.max(1, e - 3) + Math.floor(Math.log10(Math.max(10, ps('earth').res.solar)) / 2);
-  PLANET_ORDER.forEach(pid => { if (pid !== 'earth' && isUnlocked(pid)) r += ps(pid).era; });
-  return Math.max(1, r);
-}
+function canPrestige(pid = cur()) { return prestigeInfo(pid).ready; }
 
 // ============================================================
 //  ФОРМАТИРОВАНИЕ И МЕЛОЧИ
@@ -301,7 +308,8 @@ function avatarStyle(name) {
   return `background:linear-gradient(135deg,hsl(${h} 80% 56%),hsl(${(h + 55) % 360} 80% 42%))`;
 }
 function initialOf(name) { const c = [...String(name || '?')][0] || '?'; return c.toUpperCase(); }
-function applyBodyBg() { $('bodyBg').className = state.look[cur()].bg || PL(cur()).defaultBg; }
+// Фон интерфейса — всегда «родной» для планеты; купленный фон меняет только космос за планетой
+function applyBodyBg() { $('bodyBg').className = PL(cur()).defaultBg; $('viewport').dataset.bg = state.look[cur()].bg || ''; }
 
 // ============================================================
 //  СЕТЬ / АККАУНТ
@@ -343,7 +351,7 @@ async function api(path, opts = {}) {
 function readLocal(uid) { try { return JSON.parse(localStorage.getItem('terra_save_' + uid)); } catch (e) { return null; } }
 function saveLocal() {
   const uid = currentUid();
-  if (!uid) return;
+  if (!uid || demo) return;   // гость ничего не сохраняет
   try { state.lastSave = Date.now(); localStorage.setItem('terra_save_' + uid, JSON.stringify(state)); } catch (e) {}
 }
 function pickNewest(a, b) {
@@ -358,10 +366,15 @@ function setSync(kind) {
 
 let syncing = false, syncTimer = null;
 let needsReconcile = false;
+// насколько продвинуто сохранение (то же, что общий счёт рейтинга): престиж — 100, эпоха/этап — 1
 function progressOf(s) {
   if (!s) return -1;
-  const era = (s.v >= 3) ? ((s.planets && s.planets.earth && s.planets.earth.era) | 0) : (s.era | 0);
-  return (s.rebirths | 0) * 10 + era;
+  if (s.v >= 3) {
+    const pr = (s.v >= 5 && s.ppr) ? PLANET_ORDER.reduce((a, p) => a + ((s.ppr[p] | 0)), 0) : (s.rebirths | 0);
+    const eras = PLANET_ORDER.reduce((a, p) => a + ((s.planets && s.planets[p] && s.planets[p].era) | 0), 0);
+    return pr * 100 + eras;
+  }
+  return (s.rebirths | 0) * 100 + (s.era | 0);
 }
 function canSync() { return CONFIGURED && !!session && playing && !demo && !!myProfile && !clientOutdated; }
 function queueSync(delay = 1500) { if (!canSync()) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow(), delay); }
@@ -491,14 +504,14 @@ function showLogin(message) {
   $('loginOverlay').classList.add('open');
   setLoginBusy(false);
   showLoginError(message || '');
-  $('demoBtn').hidden = CONFIGURED;
+  $('demoBtn').hidden = false;
   $('googleBtn').hidden = !CONFIGURED;
   const apk = $('apkLink');
   apk.hidden = IS_APP || !CONFIG.APK_URL;
   if (!apk.hidden) apk.href = CONFIG.APK_URL;
   if (!CONFIGURED) {
     showLoginError(message || (IS_APP
-      ? 'Сервер не указан в config.js — доступен только демо-режим.'
+      ? 'Сервер не указан в config.js — доступна только игра гостем.'
       : 'Онлайн не настроен: впишите адрес сервера в web/config.js (см. README).'));
   }
 }
@@ -596,7 +609,9 @@ function clearSession() { try { localStorage.removeItem('terra_session'); } catc
 
 async function logout({ ask = true, skipSync = false, keepCache = false, message = '' } = {}) {
   if (ask) {
-    const ok = await askConfirm({ title: 'Выйти из аккаунта?', text: 'Прогресс сохранён в облаке — после входа через Google вы продолжите с того же места. На этом устройстве данные будут очищены.', ok: 'Выйти' });
+    const ok = demo
+      ? await askConfirm({ title: 'Выйти из гостевого режима?', text: 'Прогресс гостя не сохраняется и пропадёт. Чтобы играть с сохранением, войдите через Google.', ok: 'Выйти', danger: true })
+      : await askConfirm({ title: 'Выйти из аккаунта?', text: 'Прогресс сохранён в облаке — после входа через Google вы продолжите с того же места. На этом устройстве данные будут очищены.', ok: 'Выйти' });
     if (!ok) return;
   }
   if (!skipSync && canSync()) {
@@ -618,11 +633,20 @@ async function logout({ ask = true, skipSync = false, keepCache = false, message
 }
 function forceLogout(msg) { logout({ ask: false, skipSync: true, keepCache: true, message: msg }); }
 
-function startDemo() {
+// Гость: играет без аккаунта, прогресс нигде не сохраняется
+async function startDemo() {
+  const ok = await askConfirm({
+    title: '👤 Играть как гость?',
+    text: 'Внимание: прогресс гостя НЕ сохраняется. После выхода или закрытия игры всё начнётся заново.\n\nРейтинг, промокоды и облако доступны только с аккаунтом. Чтобы сохранить прогресс — войдите через Google.',
+    ok: 'Играть как гость', cancel: 'Назад'
+  });
+  if (!ok) return;
   demo = true; session = null;
-  applySave(readLocal('demo'));
-  myProfile = { nickname: 'Демо', score: 0, rebirths: 0, era: 0, rank: null };
+  try { localStorage.removeItem('terra_save_demo'); } catch (e) {}
+  applySave(null);
+  myProfile = { nickname: 'Гость', score: 0, rebirths: 0, era: 0, rank: null };
   startPlaying(true);
+  showToast('👤 Гостевой режим: прогресс не сохраняется', 4000);
 }
 
 // ---------- Ник ----------
@@ -784,7 +808,7 @@ setInterval(() => { if (playing && !document.hidden) checkUpdate(); }, 30 * 60 *
 
 // ---------- Диалоги ----------
 function closeAllOverlays() {
-  ['nickOverlay', 'profileOverlay', 'confirmOverlay', 'loginOverlay', 'mapOverlay', 'questsOverlay', 'shopOverlay', 'codeOverlay'].forEach(id => $(id).classList.remove('open'));
+  ['nickOverlay', 'profileOverlay', 'confirmOverlay', 'loginOverlay', 'mapOverlay', 'questsOverlay', 'shopOverlay', 'codeOverlay', 'chestOverlay'].forEach(id => $(id).classList.remove('open'));
   if (!forcedUpdate) $('updateOverlay').classList.remove('open');
 }
 function askConfirm({ title, text, ok = 'Да', cancel = 'Отмена', danger = false }) {
@@ -814,7 +838,7 @@ function openProfile() {
     </div>
     <div class="stat-grid four">
       <div class="stat-box"><div class="stat-val">${p.rank ? '#' + p.rank : '—'}</div><div class="stat-lbl">Место</div></div>
-      <div class="stat-box"><div class="stat-val">${state.rebirths}</div><div class="stat-lbl">Перерожд.</div></div>
+      <div class="stat-box"><div class="stat-val">${totalPrestige()}</div><div class="stat-lbl">Престижи</div></div>
       <div class="stat-box"><div class="stat-val">${ps('earth').era + 1}</div><div class="stat-lbl">Эпоха</div></div>
       <div class="stat-box"><div class="stat-val">${state.unlocked.length}</div><div class="stat-lbl">Планеты</div></div>
     </div>
@@ -892,8 +916,8 @@ function fmtLeft(ms) {
 function lbStat(p, board, period) {
   if (board === 'all') return period === 'week'
     ? `<span class="lb-pts">+${fmt(p.score)}</span><span>очков</span>`
-    : `<span>🌀 ${p.rebirths}</span><span>Эпоха ${p.era + 1}</span>`;
-  return `<span>${PL(board).stageWord} ${p.era + 1}</span><span>🏗 ${fmt(p.buildings)}</span>`;
+    : `<span>🌀 ${fmt(p.rebirths)}</span><span>★ ${fmt(p.score)}</span>`;
+  return `<span>🌀 ${fmt(p.prestige || 0)} · ${PL(board).stageWord} ${p.era + 1}</span><span>🏗 ${fmt(p.buildings)}</span>`;
 }
 
 function renderLeaderboardHtml() {
@@ -904,8 +928,8 @@ function renderLeaderboardHtml() {
   const d = lbData && lbData.board === board && lbData.period === period ? lbData : null;
   const boardName = board === 'all' ? 'Общий топ' : `Топ: ${PL(board).name}`;
   const note = board === 'all'
-    ? (period === 'week' ? 'Очки, набранные с понедельника' : 'Перерождение — 10 очков, эпоха Земли — 1')
-    : (period === 'week' ? 'Лучший результат на этой неделе' : 'Лучший этап и число построек');
+    ? (period === 'week' ? 'Очки, набранные с понедельника' : 'Престиж — 100 очков, эпоха или этап — 1')
+    : (period === 'week' ? 'Лучший результат на этой неделе' : 'Престижи планеты, затем этап и постройки');
   let html = `<div class="lb-head"><div><div class="lb-title">🏆 ${boardName}</div><div class="lb-sub">${d ? 'Игроков: ' + fmt(d.total) + ' · ' : ''}${note}</div></div><button class="btn-icon" data-action="lbrefresh" type="button">⟳</button></div>
     <div class="lb-boards">${['all', ...PLANET_ORDER].map(b => `<button class="lb-board ${b === board ? 'active' : ''}" data-action="lbboard" data-id="${b}" type="button">${b === 'all' ? '🏆 Общий' : PL(b).icon + ' ' + PL(b).name}</button>`).join('')}</div>
     <div class="seg lb-period">
@@ -917,13 +941,14 @@ function renderLeaderboardHtml() {
     let rank = '—', stat;
     if (board === 'all' && period === 'all') {
       rank = me.rank ? '#' + me.rank : '—';
-      stat = `🌀 ${state.rebirths} ${plural(state.rebirths, 'перерождение', 'перерождения', 'перерождений')} · Эпоха ${ps('earth').era + 1} · 🪐 ${state.unlocked.length}`;
+      const tp = totalPrestige();
+      stat = `🌀 ${tp} ${plural(tp, 'престиж', 'престижа', 'престижей')} · ★ ${fmt(me.score || 0)} · 🪐 ${state.unlocked.length}`;
     } else {
       const m = d && d.me;
       if (m && m.rank) rank = '#' + m.rank;
       if (board === 'all') stat = m ? `+${fmt(m.score)} очков за неделю` : 'На этой неделе пока без очков';
       else if (!isUnlocked(board)) stat = `🔒 Планета ещё не открыта`;
-      else stat = m ? `${PL(board).stageWord} ${m.era + 1} · 🏗 ${fmt(m.buildings)} построек` : 'Пока без результата';
+      else stat = m ? `🌀 ${fmt(m.prestige || 0)} · ${PL(board).stageWord} ${m.era + 1} · 🏗 ${fmt(m.buildings)}` : 'Пока без результата';
     }
     html += `<div class="lb-me"><div class="lb-me-rank">${rank}</div><div class="avatar" style="${avatarStyle(me.nickname)}">${esc(initialOf(me.nickname))}</div><div class="lb-me-info"><div class="lb-me-name">${esc(me.nickname)}</div><div class="lb-me-stat">${stat}</div></div></div>`;
   }
@@ -955,6 +980,8 @@ let rotAngle = 0, cloudAngle = 0, moonAngle = 1.2, pulseScale = 1.0;
 let particles = [], ripples = [], stars = [], debris = [], shoot = null;
 let activeAsteroid = null, bossCooldown = 120, laserBeamTimer = 0;
 let shake = 0, planetFlash = 0, evolveFx = 0, evolveColor = '#ffffff';
+const autoSat = { x: 0, y: 0, front: true };
+const autoFx = { pending: 0, last: 0, flash: 0, beams: [], gain: 0, shown: 0 };
 let lastFrameTime = performance.now();
 
 const CONTINENT_BLOBS = [
@@ -984,7 +1011,13 @@ const EARTH_LOOK = [
   { ocean: ['#38bdf8', '#0369a1', '#082f49'], land: '#15803d', clouds: 0.5, fields: true, lights: 1 },
   { ocean: ['#38bdf8', '#0369a1', '#082f49'], land: '#3f6212', clouds: 0.4, fields: true, lights: 2, smog: true },
   { ocean: ['#38bdf8', '#0369a1', '#082f49'], land: '#15803d', clouds: 0.45, lights: 3, sats: 3 },
-  { ocean: ['#38bdf8', '#0369a1', '#082f49'], land: '#16a34a', clouds: 0.4, lights: 4, sats: 6, ring: true }
+  { ocean: ['#38bdf8', '#0369a1', '#082f49'], land: '#16a34a', clouds: 0.4, lights: 4, sats: 6, ring: true },
+  // 11–15: орбитальные кольца, планетарный разум, звёздные врата, межзвёздная держава, галактический маяк
+  { ocean: ['#38bdf8', '#0369a1', '#082f49'], land: '#16a34a', clouds: 0.35, lights: 4, sats: 6, ring: true, oring: true },
+  { ocean: ['#22d3ee', '#0e7490', '#082f49'], land: '#15803d', clouds: 0.35, lights: 4, sats: 6, ring: true, oring: true, grid: true },
+  { ocean: ['#22d3ee', '#0e7490', '#082f49'], land: '#15803d', clouds: 0.3, lights: 4, sats: 8, ring: true, oring: true, grid: true, gate: true },
+  { ocean: ['#5eead4', '#0f766e', '#042f2e'], land: '#16a34a', clouds: 0.3, lights: 4, sats: 8, ring: true, oring: true, grid: true, gate: true, colonies: true },
+  { ocean: ['#5eead4', '#0f766e', '#042f2e'], land: '#22c55e', clouds: 0.3, lights: 4, sats: 10, ring: true, oring: true, grid: true, gate: true, colonies: true, beacon: true }
 ];
 
 function initCanvas() {
@@ -1093,6 +1126,11 @@ function drawEarth(R, era, now) {
     if (L.fields) { ctx.fillStyle = 'rgba(234,179,8,0.45)'; ctx.beginPath(); ctx.ellipse(p.px - p.radX * 0.25, p.py + p.radY * 0.2, p.radX * 0.35, p.radY * 0.25, 0, 0, Math.PI * 2); ctx.fill(); }
   });
   if (L.clouds) drawClouds(R, L.clouds);
+  if (L.grid) { // планетарный разум: светящаяся сеть широт и долгот
+    ctx.strokeStyle = `rgba(103,232,249,${0.22 + 0.08 * Math.sin(now / 600)})`; ctx.lineWidth = 1;
+    for (let k = -2; k <= 2; k++) { const y = cy + k * R * 0.35; const w = Math.sqrt(Math.max(0, R * R - (y - cy) * (y - cy))); ctx.beginPath(); ctx.ellipse(cx, y, w, w * 0.12, 0, 0, Math.PI * 2); ctx.stroke(); }
+    for (let k = 0; k < 6; k++) { const lon = (k / 6) * Math.PI * 2 + rotAngle; const c = Math.cos(lon); if (c <= 0) continue; ctx.beginPath(); ctx.ellipse(cx + Math.sin(lon) * 0, cy, Math.abs(Math.sin(lon)) * R, R, 0, 0, Math.PI * 2); ctx.stroke(); }
+  }
   if (L.smog) { ctx.fillStyle = 'rgba(148,140,120,0.16)'; ctx.fillRect(cx - R, cy - R, R * 2, R * 2); }
   return L;
 }
@@ -1154,7 +1192,25 @@ function drawMars(R, era, now) {
   ctx.fillStyle = 'rgba(255,255,255,0.92)';
   ctx.beginPath(); ctx.ellipse(cx, cy - R * 0.97, cap, cap * 0.45, 0, 0, Math.PI * 2); ctx.fill();
   ctx.beginPath(); ctx.ellipse(cx, cy + R * 0.97, cap * 0.8, cap * 0.4, 0, 0, Math.PI * 2); ctx.fill();
-  if (era >= 4) drawClouds(R, 0.4);
+  if (era >= 5) { // леса
+    MARS_BLOBS.forEach((b, i) => {
+      const p = projectBlob({ ...b, lon: b.lon + 0.55 }, R);
+      if (!p) return;
+      ctx.fillStyle = 'rgba(21,128,61,0.8)';
+      ctx.beginPath(); ctx.ellipse(p.px, p.py, p.radX * 0.55, p.radY * 0.4, 0.4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(74,222,128,0.5)';
+      ctx.beginPath(); ctx.ellipse(p.px - p.radX * 0.1, p.py - p.radY * 0.08, p.radX * 0.3, p.radY * 0.2, 0.4, 0, Math.PI * 2); ctx.fill();
+    });
+  }
+  if (era >= 6) { // огни столицы на Олимпе
+    const om2 = projectBlob({ lon: 0.9, lat: -0.42, r: 0.11 }, R);
+    if (om2) for (let k = 0; k < 9; k++) {
+      ctx.fillStyle = `rgba(253,224,71,${0.6 + 0.4 * Math.sin(now / 300 + k)})`;
+      ctx.fillRect(om2.px + Math.cos(k * 2.4) * om2.radX * 1.3, om2.py + Math.sin(k * 2.4) * om2.radY * 1.3, 2, 2);
+    }
+  }
+  if (era >= 9) { ctx.fillStyle = 'rgba(125,211,252,0.12)'; ctx.fillRect(cx - R, cy - R, R * 2, R * 2); }
+  if (era >= 4) drawClouds(R, era >= 9 ? 0.45 : 0.4);
   else drawClouds(R, 0.14 + era * 0.03, '234,120,70'); // пылевые бури
   if (era >= 1) drawLights(R, MARS_BLOBS, Math.min(4, era), '254,215,170');
 }
@@ -1193,6 +1249,14 @@ function drawJupiter(R, era, now) {
     const x = cx + (Math.random() - 0.5) * R, y = cy + (Math.random() - 0.5) * R;
     ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 6, y + 8); ctx.lineTo(x + 1, y + 10); ctx.lineTo(x + 8, y + 20); ctx.stroke();
   }
+  if (era >= 6) drawLights(R, JUPITER_STORMS.map(s2 => ({ ...s2, lon: s2.lon + 0.8, r: 0.25 })), 4, '253,224,71'); // облачные города
+  if (era >= 8) { // зажжённое ядро
+    const t = 0.32 + 0.1 * Math.sin(now / 350);
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+    g.addColorStop(0, `rgba(253,186,116,${t + 0.3})`); g.addColorStop(0.55, `rgba(249,115,22,${t * 0.7})`); g.addColorStop(1, 'rgba(251,146,60,0)');
+    ctx.fillStyle = g; ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
+  }
+  if (era >= 9) { ctx.fillStyle = `rgba(254,249,195,${0.28 + 0.06 * Math.sin(now / 500)})`; ctx.fillRect(cx - R, cy - R, R * 2, R * 2); }
 }
 
 // шапки
@@ -1264,6 +1328,27 @@ function drawHat(R) {
     ctx.strokeStyle = 'rgba(216,180,254,0.8)'; ctx.lineWidth = Math.max(1.5, 2 * u);
     ctx.beginPath(); ctx.ellipse(0, -14 * u, 68 * u, 17 * u, 0, 0, Math.PI * 2); ctx.stroke();
     ctx.restore();
+  } else if (id === 'hat_star') { // путеводная звезда парит и мерцает
+    const t = performance.now();
+    ctx.translate(0, -34 * u + Math.sin(t / 600) * 4 * u);
+    ctx.rotate(Math.sin(t / 1400) * 0.25);
+    ctx.shadowColor = '#fde047'; ctx.shadowBlur = 18 + 6 * Math.sin(t / 300);
+    const g = ctx.createRadialGradient(0, -2 * u, 0, 0, 0, 22 * u);
+    g.addColorStop(0, '#fffbeb'); g.addColorStop(0.5, '#fde047'); g.addColorStop(1, '#f59e0b');
+    ctx.fillStyle = g; ctx.strokeStyle = '#b45309'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let k = 0; k < 10; k++) { const r = (k % 2 ? 9 : 22) * u, a = -Math.PI / 2 + k * Math.PI / 5; k ? ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r) : ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r); }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  } else if (id === 'hat_comet') { // огненный гребень, будто планета летит
+    const t = performance.now();
+    ctx.globalCompositeOperation = 'lighter';
+    for (let k = 0; k < 6; k++) {
+      const x = (-30 + k * 12) * u, h = (34 + 14 * Math.sin(t / 140 + k * 1.7)) * u;
+      const g = ctx.createLinearGradient(0, 8 * u, 0, -h);
+      g.addColorStop(0, 'rgba(250,204,21,0.95)'); g.addColorStop(0.5, 'rgba(249,115,22,0.75)'); g.addColorStop(1, 'rgba(239,68,68,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.moveTo(x - 9 * u, 10 * u); ctx.quadraticCurveTo(x - 4 * u, -h * 0.5, x + 6 * u + Math.sin(t / 200 + k) * 4 * u, -h); ctx.quadraticCurveTo(x + 6 * u, -h * 0.4, x + 9 * u, 10 * u); ctx.closePath(); ctx.fill();
+    }
   }
   ctx.restore();
 }
@@ -1284,6 +1369,10 @@ function drawMoons(R, front, now) {
     const g = ctx.createRadialGradient(mx - mr * 0.3, my - mr * 0.3, mr * 0.1, mx, my, mr);
     g.addColorStop(0, m.c[0]); g.addColorStop(1, m.c[1]);
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(mx, my, mr, 0, Math.PI * 2); ctx.fill();
+    if (pid === 'jupiter' && era >= 5) { // заводы на лунах
+      ctx.fillStyle = `rgba(251,146,60,${0.7 + 0.3 * Math.sin(now / 200 + m.a)})`;
+      ctx.fillRect(mx + mr * 0.15, my + mr * 0.1, Math.max(1.5, mr * 0.35), Math.max(1.5, mr * 0.35));
+    }
   });
 }
 
@@ -1381,21 +1470,66 @@ function renderFrame(now) {
   ctx.fillStyle = ag; ctx.beginPath(); ctx.arc(cx, cy, R * 1.34, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 
-  // кольцо Дайсона (задняя половина)
+  // Всё, что вращается вокруг планеты, рисуется в два прохода: задняя половина орбиты — до шара (планета её закрывает),
+  // передняя — после. Ближе к зрителю нижняя половина эллипса.
   const L = pid === 'earth' ? EARTH_LOOK[era] : null;
-  const ringHalf = (back) => {
-    ctx.strokeStyle = back ? 'rgba(253,224,71,0.35)' : 'rgba(253,224,71,0.85)';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath(); ctx.ellipse(cx, cy, R * 1.45, R * 0.32, -0.2, back ? Math.PI : 0, back ? Math.PI * 2 : Math.PI); ctx.stroke();
-  };
-  const jRing = (back) => {
-    ctx.strokeStyle = back ? 'rgba(103,232,249,0.3)' : 'rgba(103,232,249,0.85)';
-    ctx.lineWidth = 3; ctx.shadowColor = '#67e8f9'; ctx.shadowBlur = back ? 0 : 10;
-    ctx.beginPath(); ctx.ellipse(cx, cy, R * 1.55, R * 0.28, 0.15, back ? Math.PI : 0, back ? Math.PI * 2 : Math.PI); ctx.stroke();
+  const ringPart = (rx, ry, tilt, back, col, width, glow) => {
+    ctx.strokeStyle = col; ctx.lineWidth = width;
+    if (glow && !back) { ctx.shadowColor = glow; ctx.shadowBlur = 10; }
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, tilt, back ? Math.PI : 0, back ? Math.PI * 2 : Math.PI); ctx.stroke();
     ctx.shadowBlur = 0;
   };
-  if (L && L.ring) ringHalf(true);
-  if (pid === 'jupiter' && era >= 4) jRing(true);
+  const rings = (back) => {
+    if (L && L.ring) ringPart(R * 1.45, R * 0.32, -0.2, back, back ? 'rgba(253,224,71,0.35)' : 'rgba(253,224,71,0.85)', 2.5);
+    if (L && L.oring) ringPart(R * 1.22, R * 0.2, 0.28, back, back ? 'rgba(125,211,252,0.3)' : 'rgba(125,211,252,0.9)', 2, '#7dd3fc');
+    if (pid === 'jupiter' && era >= 4) ringPart(R * 1.55, R * 0.28, 0.15, back, back ? 'rgba(103,232,249,0.3)' : 'rgba(103,232,249,0.85)', 3, '#67e8f9');
+    if (pid === 'mars' && era >= 8) { // кольцо Фобоса — из обломков
+      ctx.setLineDash([2, 5]);
+      ringPart(R * 1.42, R * 0.24, -0.15, back, back ? 'rgba(216,180,254,0.35)' : 'rgba(216,180,254,0.95)', 3);
+      ctx.setLineDash([]);
+    }
+  };
+  // мелкие спутники/корабли на эллиптических орбитах: front — только те, что ближе к нам
+  const orbiters = (front) => {
+    if (L && L.sats) for (let i = 0; i < L.sats; i++) {
+      const a = rotAngle * (2 + i * 0.3) + i * (Math.PI * 2 / L.sats), sg = i % 2 ? 1 : -1;
+      if ((Math.sin(a) * sg > 0) !== front) continue;
+      const sx = cx + Math.cos(a) * R * 1.18, sy = cy + Math.sin(a) * R * 0.3 * sg;
+      ctx.globalAlpha = front ? 1 : 0.55;
+      ctx.fillStyle = '#e2e8f0'; ctx.fillRect(sx - 2, sy - 1, 4, 2);
+      ctx.fillStyle = '#60a5fa'; ctx.fillRect(sx - 5, sy - 0.5, 2, 1); ctx.fillRect(sx + 3, sy - 0.5, 2, 1);
+      ctx.globalAlpha = 1;
+    }
+    if (pid === 'jupiter' && era >= 7) for (let i = 0; i < 5; i++) { // корабли гравитационной пращи
+      const a = rotAngle * (5 + i) + i * 1.3;
+      if ((Math.sin(a) > 0) !== front) continue;
+      const sx = cx + Math.cos(a) * R * 1.3, sy = cy + Math.sin(a) * R * 0.38;
+      const tx = -Math.sin(a) * 9, ty = Math.cos(a) * 3;
+      const g = ctx.createLinearGradient(sx, sy, sx - tx, sy - ty);
+      g.addColorStop(0, 'rgba(186,230,253,0.95)'); g.addColorStop(1, 'rgba(186,230,253,0)');
+      ctx.strokeStyle = g; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx - tx, sy - ty); ctx.stroke();
+    }
+  };
+  // спутник автокликера
+  const autoLvl = perk('autoclicker');
+  const satA = rotAngle * 2;
+  autoSat.x = cx + Math.cos(satA) * R * 1.35; autoSat.y = cy + Math.sin(satA) * R * 0.45; autoSat.front = Math.sin(satA) > 0;
+  const drawAutoSat = (front) => {
+    if (!autoLvl) return;
+    ctx.strokeStyle = front ? 'rgba(250,204,21,0.22)' : 'rgba(250,204,21,0.12)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.ellipse(cx, cy, R * 1.35, R * 0.45, 0, front ? 0 : Math.PI, front ? Math.PI : Math.PI * 2); ctx.stroke();
+    if (autoSat.front !== front) return;
+    const { x: sx, y: sy } = autoSat;
+    ctx.globalAlpha = front ? 1 : 0.6;
+    ctx.fillStyle = '#60a5fa'; ctx.fillRect(sx - 9, sy - 1.5, 5, 3); ctx.fillRect(sx + 4, sy - 1.5, 5, 3);   // панели
+    ctx.fillStyle = '#facc15'; ctx.shadowColor = '#facc15'; ctx.shadowBlur = autoFx.flash > 0 ? 16 : 8;
+    ctx.beginPath(); ctx.arc(sx, sy, 4.5, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+  };
+
+  rings(true);
+  orbiters(false);
+  drawAutoSat(false);
   drawMoons(R, false, now);
 
   // шар планеты
@@ -1406,7 +1540,7 @@ function renderFrame(now) {
   else drawJupiter(R, era, now);
 
   const shade = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.35, R * 0.1, cx + R * 0.2, cy + R * 0.2, R * 1.1);
-  shade.addColorStop(0, 'rgba(255,255,255,0.18)'); shade.addColorStop(1, 'rgba(0,0,0,0.86)');
+  shade.addColorStop(0, 'rgba(255,255,255,0.18)'); shade.addColorStop(1, `rgba(0,0,0,${pid === 'jupiter' && era >= 9 ? 0.45 : 0.86})`);
   ctx.fillStyle = shade; ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
   if (!(pid === 'earth' && era === 0)) {
     const sx = cx - R * 0.42, sy = cy - R * 0.46;
@@ -1423,18 +1557,52 @@ function renderFrame(now) {
   ctx.strokeStyle = halo + '99'; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
 
-  if (L && L.ring) ringHalf(false);
-  if (pid === 'jupiter' && era >= 4) jRing(false);
-  drawMoons(R, true, now);
-  // спутники Земли
-  if (L && L.sats) {
-    for (let i = 0; i < L.sats; i++) {
-      const a = rotAngle * (2 + i * 0.3) + i * (Math.PI * 2 / L.sats);
-      const sx = cx + Math.cos(a) * R * 1.18, sy = cy + Math.sin(a) * R * 0.3 * (i % 2 ? 1 : -1);
-      ctx.fillStyle = '#e2e8f0'; ctx.fillRect(sx - 2, sy - 1, 4, 2);
-      ctx.fillStyle = '#60a5fa'; ctx.fillRect(sx - 5, sy - 0.5, 2, 1); ctx.fillRect(sx + 3, sy - 0.5, 2, 1);
-    }
+  // Юпитер-звезда: корона
+  if (pid === 'jupiter' && era >= 9) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    const cg = ctx.createRadialGradient(cx, cy, R * 0.95, cx, cy, R * 1.7);
+    cg.addColorStop(0, `rgba(254,240,138,${0.5 + 0.1 * Math.sin(now / 400)})`); cg.addColorStop(1, 'rgba(254,240,138,0)');
+    ctx.fillStyle = cg; ctx.beginPath(); ctx.arc(cx, cy, R * 1.7, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
   }
+  // Марс: космический лифт — трос от экватора к станции
+  if (pid === 'mars' && era >= 7) {
+    const ang = -0.55, x1 = cx + Math.cos(ang) * R, y1 = cy + Math.sin(ang) * R, x2 = cx + Math.cos(ang) * R * 1.85, y2 = cy + Math.sin(ang) * R * 1.85;
+    ctx.strokeStyle = 'rgba(226,232,240,0.75)'; ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    const k = (now / 2500) % 1;
+    ctx.fillStyle = '#fde047'; ctx.fillRect(x1 + (x2 - x1) * k - 1.5, y1 + (y2 - y1) * k - 1.5, 3, 3);
+    ctx.fillStyle = '#cbd5e1'; ctx.fillRect(x2 - 4, y2 - 3, 8, 6);
+  }
+  // Земля: звёздные врата, колонии, маяк
+  if (L && L.gate) {
+    const gx = cx + R * 1.5, gy = cy - R * 0.62, gr = R * 0.26;
+    ctx.save(); ctx.translate(gx, gy);
+    ctx.strokeStyle = '#c4b5fd'; ctx.lineWidth = 3; ctx.shadowColor = '#a78bfa'; ctx.shadowBlur = 14;
+    ctx.beginPath(); ctx.ellipse(0, 0, gr * 0.55, gr, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.shadowBlur = 0;
+    const sw = ctx.createRadialGradient(0, 0, 0, 0, 0, gr);
+    sw.addColorStop(0, `rgba(237,233,254,${0.7 + 0.2 * Math.sin(now / 250)})`); sw.addColorStop(1, 'rgba(124,58,237,0.15)');
+    ctx.fillStyle = sw; ctx.beginPath(); ctx.ellipse(0, 0, gr * 0.5, gr * 0.92, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+  if (L && L.colonies) for (let k = 0; k < 8; k++) {
+    const a = now / 9000 * (k % 2 ? 1 : -1) + k * 0.785, rr = R * (1.75 + (k % 3) * 0.12);
+    const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr * 0.55;
+    ctx.fillStyle = ['#f472b6', '#facc15', '#5eead4', '#a78bfa'][k % 4];
+    ctx.globalAlpha = 0.5 + 0.5 * Math.sin(now / 300 + k);
+    ctx.beginPath(); ctx.arc(x, y, 1.8, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  if (L && L.beacon) {
+    const bg = ctx.createLinearGradient(0, cy - R, 0, 0);
+    bg.addColorStop(0, `rgba(254,240,138,${0.75 + 0.2 * Math.sin(now / 300)})`); bg.addColorStop(1, 'rgba(254,240,138,0)');
+    ctx.fillStyle = bg; ctx.fillRect(cx - 2.5, 0, 5, cy - R);
+  }
+
+  rings(false);
+  drawMoons(R, true, now);
+  orbiters(true);
   drawHat(R);
 
   // волна новой эпохи
@@ -1445,19 +1613,31 @@ function renderFrame(now) {
     evolveFx -= 0.012 * f;
   }
 
-  // спутник ПВО
-  if (perk('autoclicker') > 0) {
-    ctx.strokeStyle = 'rgba(250,204,21,0.16)'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.ellipse(cx, cy, R * 1.35, R * 0.45, 0, 0, Math.PI * 2); ctx.stroke();
-    const satA = rotAngle * 2;
-    const sx = cx + Math.cos(satA) * R * 1.35, sy = cy + Math.sin(satA) * R * 0.45;
-    ctx.fillStyle = '#facc15'; ctx.shadowColor = '#facc15'; ctx.shadowBlur = 8;
-    ctx.beginPath(); ctx.arc(sx, sy, 4.5, 0, Math.PI * 2); ctx.fill();
-    ctx.shadowBlur = 0;
+  // спутник автокликера (передний проход) и его выстрелы
+  drawAutoSat(true);
+  if (autoLvl) {
     if (laserBeamTimer > 0 && activeAsteroid) {
       ctx.strokeStyle = '#34d399'; ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(activeAsteroid.x, activeAsteroid.y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(autoSat.x, autoSat.y); ctx.lineTo(activeAsteroid.x, activeAsteroid.y); ctx.stroke();
       laserBeamTimer--;
+    }
+    // видимые «тапы» автокликера по планете (не чаще ~8 раз в секунду, чтобы не мельтешило)
+    if (autoFx.pending > 0 && now - autoFx.last > 120 && !activeAsteroid) {
+      autoFx.pending = 0; autoFx.last = now; autoFx.flash = 1;
+      const th = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * R * 0.8;
+      const tx = cx + Math.cos(th) * rr, ty = cy + Math.sin(th) * rr;
+      autoFx.beams.push({ x1: autoSat.x, y1: autoSat.y, x2: tx, y2: ty, life: 1, show: autoSat.front });
+      ripples.push({ x: tx, y: ty, r: 3, life: 0.9, color: '#facc15', speed: 1.8, width: 1.5, decay: 0.06 });
+      spawnParticles(tx, ty, '#fde047', 3, 2, 1.5);
+    }
+    autoFx.flash = Math.max(0, autoFx.flash - 0.1 * f);
+    for (let i = autoFx.beams.length - 1; i >= 0; i--) {
+      const b = autoFx.beams[i];
+      b.life -= 0.12 * f;
+      if (b.life <= 0) { autoFx.beams.splice(i, 1); continue; }
+      if (!b.show) continue;
+      ctx.strokeStyle = `rgba(253,224,71,${b.life * 0.85})`; ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.moveTo(b.x1, b.y1); ctx.lineTo(b.x2, b.y2); ctx.stroke();
     }
   }
 
@@ -1789,7 +1969,7 @@ function evolveEra() {
   const pid = cur();
   const cost = eraCost(pid);
   if (!cost || !canPay(cost)) { Sound.error(); return; }
-  const couldRebirth = canRebirth();
+  const couldPrestige = canPrestige(pid);
   pay(cost);
   ps(pid).era++;
   const era = ps(pid).era;
@@ -1806,36 +1986,37 @@ function evolveEra() {
     big: String(era + 1), title: E.name, desc: E.desc, color: E.halo,
     chips: unlocks.map(b => `${b.icon} ${b.name}`),
     extra: (pid === 'earth' && PLANETS.mars.unlock.earthEra === era && !isUnlocked('mars')) ? '🚀 Открыта экспедиция на Марс — загляните на карту!'
-         : (!couldRebirth && canRebirth()) ? '🌀 Теперь доступно перерождение — раздел «Престиж»' : ''
+         : (!couldPrestige && canPrestige(pid)) ? `🌀 Цели престижа выполнены — раздел «Престиж» (${PL(pid).name})` : ''
   });
   renderAll(); saveLocal(); queueSync(800);
 }
 
-async function performRebirth() {
-  if (!canRebirth()) return;
-  const reward = getRebirthGemsReward();
-  const next = rebirthRequirements(state.rebirths + 1);
-  const nextTxt = PLANET_ORDER.filter(p => next[p] !== undefined).map(p => `${PL(p).name} — ${next[p] + 1}`).join(', ');
+async function performPrestige() {
+  const pid = cur(), info = prestigeInfo(pid), P = PL(pid);
+  if (!info.ready) return;
+  const next = prestigeGoals(pid, info.n + 1).map(g => g.kind === 'stage' ? `${P.stageWord.toLowerCase()} ${g.need + 1}` : g.kind === 'build' ? `${fmt(g.need)} построек` : `${fmt(g.need)} ${RES[g.res].icon}`).join(', ');
   const ok = await askConfirm({
-    title: '🌀 Перерождение',
-    text: `Ресурсы, постройки и эпохи всех планет сбросятся (открытые планеты, кристаллы, сапфиры и образ останутся). Вы получите +${reward} 💎, а доход и сила тапа вырастут до ×${rebirthMult() + 1}.\n\nСледующее перерождение потребует больше: ${nextTxt}.`,
-    ok: 'Переродиться'
+    title: `🌀 Престиж: ${P.name}`,
+    text: `Ресурсы, постройки и ${P.stageWord === 'Эпоха' ? 'эпохи' : 'этапы'} планеты «${P.name}» сбросятся. Другие планеты, кристаллы, сапфиры и образ не тронутся.\n\nНаграда: +${info.gems} 💎, доход и тап на этой планете ×${info.nextMult}.\n\nСледующий престиж потребует больше: ${next}.`,
+    ok: 'Совершить престиж'
   });
-  if (!ok || !canRebirth()) return;
-  state.gems += reward;
-  state.rebirths += 1;
-  PLANET_ORDER.forEach(pid => { state.stats.maxEra[pid] = Math.max(state.stats.maxEra[pid] || 0, ps(pid).era); });
-  PLANET_ORDER.forEach(pid => { state.planets[pid] = defaultPlanet(pid); });
+  if (!ok || !canPrestige(pid)) return;
+  state.gems += info.gems;
+  state.ppr[pid] = info.n + 1;
+  state.rebirths = totalPrestige();
+  state.stats.maxEra[pid] = Math.max(state.stats.maxEra[pid] || 0, ps(pid).era);
+  state.planets[pid] = defaultPlanet(pid);
   const starter = perk('starter_pack') * 300;
-  ['solar', 'water', 'air'].forEach(r => ps('earth').res[r] += starter);
+  P.res.slice(0, 3).forEach(r => ps(pid).res[r] += starter);
   endAsteroid();
   evolveFx = 1; evolveColor = '#c084fc';
   spawnParticles(cx, cy, '#c084fc', 50, 7, 4);
   vibrate([40, 60, 40]);
   Sound.rebirth();
-  const nr = rebirthReqList();
-  showCinema({ kicker: `Перерождение №${state.rebirths}`, big: '🌀', title: `Доход ×${rebirthMult()}`, desc: `Вселенная началась заново, но вы стали сильнее. +${reward} 💎 на перки.`, color: '#c084fc',
-    chips: [], extra: 'Для следующего перерождения: ' + nr.map(r => `${PL(r.pid).icon} ${PL(r.pid).stageWord.toLowerCase()} ${r.need + 1}`).join(', ') });
+  const goals = prestigeInfo(pid).goals;
+  showCinema({ kicker: `${P.name} · престиж №${state.ppr[pid]}`, big: '🌀', title: `Доход ×${planetMult(pid)}`,
+    desc: `Планета начала путь заново, но стала сильнее. +${info.gems} 💎 на перки.`, color: '#c084fc', chips: [],
+    extra: 'Следующая цель: ' + goals.map(g => g.kind === 'stage' ? `${P.stageWord.toLowerCase()} ${g.need + 1}` : g.kind === 'build' ? `${fmt(g.need)} построек` : `${fmt(g.need)} ${RES[g.res].icon}`).join(', ') });
   onPlanetChanged(); saveLocal(); queueSync(500);
 }
 
@@ -1844,7 +2025,7 @@ function handleCosmetic(id) {
   if (!item) return;
   const pid = cur();
   if (!state.ownedCosmetics.includes(id)) {
-    if (item.code || (item.planet && !isUnlocked(item.planet))) { Sound.error(); return; }
+    if (item.code || item.chest || (item.planet && !isUnlocked(item.planet))) { Sound.error(); return; }
     if (!canPay(item.cost)) { Sound.error(); return; }
     pay(item.cost);
     state.ownedCosmetics.push(id);
@@ -1879,7 +2060,7 @@ function dayKey(d = new Date()) { return `${d.getFullYear()}-${String(d.getMonth
 function hashStr(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
 function questAvailable(q) {
   if (q.need === 'planets') return state.unlocked.length > 1;
-  if (q.need === 'gems') return state.gems > 0 || state.rebirths > 0;
+  if (q.need === 'gems') return state.gems > 0 || totalPrestige() > 0;
   if (q.need === 'evolve') return PLANET_ORDER.some(pid => isUnlocked(pid) && ps(pid).era < PL(pid).eras.length - 1);
   return true;
 }
@@ -1908,7 +2089,7 @@ function dailyProgress(q) {
 function achValue(a) {
   if (a.kind === 'stat') return state.stats[a.key] || 0;
   if (a.kind === 'era') return isUnlocked(a.key) ? Math.max(state.stats.maxEra[a.key] || 0, ps(a.key).era) + 1 : 0;
-  if (a.kind === 'rebirths') return state.rebirths;
+  if (a.kind === 'rebirths') return totalPrestige();
   if (a.kind === 'planet') return isUnlocked(a.key) ? 1 : 0;
   if (a.kind === 'style') return state.ownedCosmetics.length;
   return 0;
@@ -1984,11 +2165,96 @@ function renderQuests() {
   html += ach.map(x => questRow('ach', x.a.id, x.a.icon, x.a.name, x.a.desc, x.v, x.a.goal, x.a.reward, x.done, x.claimed, i++)).join('');
   $('questsBody').innerHTML = html;
 }
+// ---------- Магазин и сундуки ----------
 function openShop() {
   if (!playing) return;
-  $('shopSapph').textContent = fmt(state.sapphires);
+  renderShop();
   $('shopOverlay').classList.add('open');
   Sound.ui();
+}
+function renderShop() {
+  $('shopSapph').textContent = fmt(state.sapphires);
+  const left = boostLeft();
+  $('shopBoost').hidden = !left;
+  if (left) $('shopBoost').textContent = `⚡ Ускоритель ×2 активен: ещё ${fmtCountdown(left / 1000)}`;
+  const chestItems = COSMETICS.filter(c => c.chest);
+  const owned = chestItems.filter(c => state.ownedCosmetics.includes(c.id)).length;
+  $('chestList').innerHTML = CHESTS.map((c, i) => `
+    <div class="chest-card" style="--c:${c.color};--i:${i}">
+      <div class="chest-ico">${c.icon}</div>
+      <div class="chest-info">
+        <div class="chest-name">${c.name}</div>
+        <div class="chest-desc">${c.desc}</div>
+        <div class="chest-odds">💎 ${c.gems[0]}–${c.gems[1]} · ресурсы за ${c.resMin} мин${c.boostChance >= 1 ? ` · ⚡×2 на ${c.boostMin} мин` : ` · ⚡ ${Math.round(c.boostChance * 100)}%`} · 👑 ${c.itemChance >= 1 ? 'точно' : Math.round(c.itemChance * 100) + '%'}</div>
+      </div>
+      <button class="chest-buy" data-chest="${c.id}" type="button" ${state.sapphires >= c.price ? '' : 'disabled'}>Открыть<span>${c.price} 🔷</span></button>
+    </div>`).join('');
+  $('chestNote').textContent = `Редкие образы из сундуков: собрано ${owned} из ${chestItems.length}`;
+}
+const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+// Содержимое сундука: кристаллы, ресурсы текущей планеты (доход за N минут), ускоритель ×2, редкий образ
+function rollChest(c) {
+  const pid = cur(), r = rates(pid), out = { gems: randInt(c.gems[0], c.gems[1]), res: {}, boostMin: 0, item: null };
+  PL(pid).res.forEach(k => {
+    let v = (r[k] || 0) * 60 * c.resMin;
+    if (k === PL(pid).clickRes) v = Math.max(v, clickGain(pid) * 3 * 60 * c.resMin);
+    if (v >= 1) out.res[k] = Math.floor(v);
+  });
+  if (Math.random() < c.boostChance) out.boostMin = c.boostMin;
+  if (Math.random() < c.itemChance) {
+    const pool = COSMETICS.filter(x => x.chest && !state.ownedCosmetics.includes(x.id));
+    if (pool.length) out.item = pool[Math.floor(Math.random() * pool.length)].id;
+    else out.gems += Math.round(c.price * 0.6);   // всё собрано — компенсация кристаллами
+  }
+  return out;
+}
+let chestPending = null;
+function openChest(id) {
+  const c = CHESTS.find(x => x.id === id);
+  if (!c || !playing || chestPending) return;
+  if (state.sapphires < c.price) { Sound.error(); return; }
+  state.sapphires -= c.price;
+  const rw = rollChest(c);
+  state.gems += rw.gems;
+  for (const k in rw.res) ps(cur()).res[k] += rw.res[k];
+  if (rw.boostMin) state.boostUntil = Math.min(Date.now() + 6 * 3600000, Math.max(Date.now(), state.boostUntil || 0) + rw.boostMin * 60000);
+  if (rw.item) state.ownedCosmetics.push(rw.item);
+  stat('chests');
+  saveLocal(); queueSync(800);
+  chestPending = { c, rw };
+  // анимация: сундук трясётся, затем раскрывается
+  const ov = $('chestOverlay');
+  ov.style.setProperty('--c', c.color);
+  $('chestBig').textContent = c.icon;
+  $('chestTitle').textContent = c.name;
+  $('chestRewards').innerHTML = '';
+  $('chestTake').hidden = true;
+  ov.classList.remove('opened');
+  $('shopOverlay').classList.remove('open');
+  ov.classList.add('open');
+  Sound.ui();
+  setTimeout(revealChest, 1100);
+}
+function revealChest() {
+  if (!chestPending) return;
+  const { c, rw } = chestPending;
+  const ov = $('chestOverlay');
+  if (ov.classList.contains('opened')) return;
+  ov.classList.add('opened');
+  Sound.unlock(); vibrate([30, 40, 60]);
+  const items = [`<div class="cr-item"><span>💎</span><b>+${fmt(rw.gems)}</b><i>кристаллов</i></div>`];
+  for (const k in rw.res) items.push(`<div class="cr-item"><span>${RES[k].icon}</span><b>+${fmt(rw.res[k])}</b><i>${RES[k].name.toLowerCase()}</i></div>`);
+  if (rw.boostMin) items.push(`<div class="cr-item boost"><span>⚡</span><b>×2</b><i>доход и тап ${rw.boostMin} мин</i></div>`);
+  if (rw.item) { const it = COSMETICS.find(x => x.id === rw.item); items.push(`<div class="cr-item rare"><span>${it.icon}</span><b>${it.name}</b><i>редкий ${it.type === 'hat' ? 'головной убор' : 'фон'}!</i></div>`); }
+  $('chestRewards').innerHTML = items.map((h, i) => h.replace('class="cr-item', `style="--i:${i}" class="cr-item`)).join('');
+  setTimeout(() => { $('chestTake').hidden = false; }, 500);
+}
+function closeChest() {
+  $('chestOverlay').classList.remove('open', 'opened');
+  const had = chestPending;
+  chestPending = null;
+  renderAll();
+  if (had) { renderShop(); $('shopOverlay').classList.add('open'); }
 }
 
 // ============================================================
@@ -2142,11 +2408,11 @@ function costSig(s) { return Object.entries(s).map(([k, v]) => getRes(k) >= v ? 
 function panelSig() {
   const t = ui.tab, pid = cur();
   const base = pid + ps(pid).era + t;
-  if (t === 'top') return base + lbVer + ui.lbBoard + ui.lbPeriod + (myProfile ? myProfile.rank : '') + state.rebirths;
-  if (t === 'rebirth') return base + rebirthReqList().map(r => r.ok ? 1 : 0).join('') + state.rebirths + getRebirthGemsReward()
+  if (t === 'top') return base + lbVer + ui.lbBoard + ui.lbPeriod + (myProfile ? myProfile.rank + ':' + myProfile.score : '') + totalPrestige();
+  if (t === 'rebirth') return base + prestigeInfo(pid).goals.map(g => g.ok ? 1 : (g.kind === 'stage' ? 0 : Math.floor(g.have / g.goal * 20))).join('') + prestigeCount(pid)
     + GLOBAL_PERKS.map(p => (perk(p.id) < p.max && state.gems >= perkCost(p, perk(p.id))) ? 1 : 0).join('')
     + PL(pid).perks.map(p => (ppk(pid, p.id) < p.max && state.gems >= perkCost(p, ppk(pid, p.id))) ? 1 : 0).join('');
-  if (t === 'shop') return base + ui.shopTab + COSMETICS.map(c => state.ownedCosmetics.includes(c.id) ? 'o' : c.code ? 'c' : costSig(c.cost)).join('') + state.unlocked.join();
+  if (t === 'shop') return base + ui.shopTab + COSMETICS.map(c => state.ownedCosmetics.includes(c.id) ? 'o' : (c.code || c.chest) ? 'c' : costSig(c.cost)).join('') + state.unlocked.join();
   return base + ui.buyMode + PL(pid).buildings.filter(b => b.tab === t).map(b => b.u <= ps(pid).era
     ? (ui.buyMode === 'max' ? maxAffordable(pid, b) : costSig(bulkCost(pid, b, ui.buyMode))) : 'x').join('|');
 }
@@ -2176,7 +2442,7 @@ function updateUserChip() {
   av.innerText = myProfile ? initialOf(name) : '?';
   av.setAttribute('style', myProfile ? avatarStyle(name) : 'background:#334155');
   $('hudName').innerText = name;
-  $('logoutBtn').hidden = !(session && !demo);
+  $('logoutBtn').hidden = !(session || demo);
 }
 function renderRankPill() { $('rankPill').innerText = (myProfile && myProfile.rank) ? `🏆 #${myProfile.rank}` : '🏆 —'; }
 function updateSoundBtn() { const b = $('soundBtn'); b.textContent = Sound.enabled ? '🔊' : '🔇'; b.title = Sound.enabled ? 'Выключить звук' : 'Включить звук'; }
@@ -2205,10 +2471,11 @@ function renderHeaderAndEra() {
     $('rr-' + k).textContent = rate > 0 ? `+${fmt(rate)}/с` : RES[k].name;
   });
   if ($('rv-gems')) { $('rv-gems').textContent = fmt(state.gems); $('rv-sapphire').textContent = fmt(state.sapphires); }
-  $('hudSub').innerText = `${P.icon} ${stageLabel(pid)} · доход ×${rebirthMult()}`;
-  const sp = speedMult();
-  $('speedBadge').hidden = sp <= 1;
-  $('speedBadge').innerText = `⏳ ${Math.round(sp * 100)}%`;
+  $('hudSub').innerText = `${P.icon} ${stageLabel(pid)} · ×${fmt(planetMult(pid))}${prestigeCount(pid) ? ' · 🌀' + prestigeCount(pid) : ''}`;
+  const sp = speedMult(), bl = boostLeft();
+  $('speedBadge').hidden = sp <= 1 && !bl;
+  $('speedBadge').innerText = [bl ? `⚡×2 ${fmtCountdown(bl / 1000)}` : '', sp > 1 ? `⏳${Math.round(sp * 100)}%` : ''].filter(Boolean).join(' ');
+  $('speedBadge').classList.toggle('boost', !!bl);
   const ap = $('astPill');
   if (activeAsteroid) { ap.innerText = activeAsteroid.golden ? '✨ Бой!' : '☄️ Бой!'; ap.className = 'pill alert'; }
   else { ap.innerText = playing ? `☄️ ${fmtCountdown(bossCooldown)}` : '☄️ —'; ap.className = 'pill'; }
@@ -2285,19 +2552,22 @@ function renderPanel() {
   if (tab === 'top') {
     container.innerHTML = renderLeaderboardHtml();
   } else if (tab === 'rebirth') {
-    const reqs = rebirthReqList(), canReb = reqs.every(r => r.ok), reward = getRebirthGemsReward();
+    const info = prestigeInfo(pid);
     let i = 0;
+    const others = PLANET_ORDER.filter(x => isUnlocked(x)).map(x => `<span class="pp-chip ${x === pid ? 'cur' : ''}">${PL(x).icon} ${prestigeCount(x)} 🌀 · ×${planetMult(x)}</span>`).join('');
     container.innerHTML = `
       <div class="card rebirth-card" style="--i:${i++}">
-        <div class="card-title" style="font-size:0.95rem;color:#f5d0fe;">🌀 Перерождение №${state.rebirths + 1}</div>
-        <div class="card-desc" style="color:#e2e8f0;margin:0;">Сбрасывает ресурсы, постройки и эпохи всех планет (открытые планеты остаются) за 💎 Кристаллы. Каждое перерождение даёт +100% к доходу и силе тапа. Сейчас: ×${rebirthMult()} → ×${rebirthMult() + 1}.</div>
+        <div class="card-title" style="font-size:0.95rem;color:#f5d0fe;">🌀 Престиж планеты «${P.name}» №${info.n + 1}</div>
+        <div class="card-desc" style="color:#e2e8f0;margin:0;">Сбрасывает только эту планету: её ресурсы, постройки и ${P.stageWord === 'Эпоха' ? 'эпохи' : 'этапы'}. Награда — 💎 кристаллы и навсегда +100% к доходу и тапу на ней. Сейчас ×${info.mult} → ×${info.nextMult}.</div>
         <div class="reb-reqs">
-          <div class="reb-reqs-title">Условия${state.rebirths ? ' — с каждым перерождением их больше' : ''}:</div>
-          ${reqs.map(r => `<div class="reb-req ${r.ok ? 'ok' : ''}"><span>${r.ok ? '✅' : '⬜'} ${esc(r.label)}</span><span class="reb-have">${r.have ? `${r.have}/${r.need + 1}` : '🔒'}</span></div>`).join('')}
+          <div class="reb-reqs-title">Цели престижа${info.n ? ' — с каждым престижем выше' : ''}:</div>
+          ${info.goals.map(g => `<div class="reb-req ${g.ok ? 'ok' : ''}"><span>${g.ok ? '✅' : '⬜'} ${esc(g.label)}</span><span class="reb-have">${g.kind === 'stage' ? `${g.have}/${g.goal}` : `${fmt(Math.min(g.have, g.goal))}/${fmt(g.goal)}`}</span></div>
+            ${g.kind === 'stage' ? '' : `<div class="reb-bar"><i style="width:${Math.min(100, g.have / g.goal * 100).toFixed(1)}%"></i></div>`}`).join('')}
         </div>
-        <button class="btn-rebirth-main" data-action="rebirth" type="button" ${canReb ? '' : 'disabled'}>
-          ${canReb ? `Переродиться (+${reward} 💎)` : 'Выполните условия'}
+        <button class="btn-rebirth-main" data-action="rebirth" type="button" ${info.ready ? '' : 'disabled'}>
+          ${info.ready ? `Совершить престиж (+${info.gems} 💎)` : 'Выполните цели'}
         </button>
+        <div class="pp-row">${others}</div>
       </div>
       <div class="section-header" style="--i:${i++}"><span>🌳 Древо Вечности · все планеты</span><span>💎 ${fmt(state.gems)}</span></div>
       ${GLOBAL_PERKS.map(p => perkCard(p, perk(p.id), 'perk', 'perk-' + p.id, i++, p.effect(perk(p.id)))).join('')}
@@ -2319,10 +2589,11 @@ function renderPanel() {
         const preview = item.type === 'bg'
           ? `<div class="icon-tile swatch" style="background:${item.swatch}"><span>${item.icon}</span></div>`
           : `<div class="icon-tile t-shop">${item.icon}</div>`;
-        const badge = item.code ? `<span class="planet-badge code">🎁 эксклюзив</span>` : item.planet ? `<span class="planet-badge">${PL(item.planet).icon} ${PL(item.planet).name}</span>` : '';
+        const badge = item.code ? `<span class="planet-badge code">🎁 эксклюзив</span>` : item.chest ? `<span class="planet-badge chest">🧰 редкий</span>` : item.planet ? `<span class="planet-badge">${PL(item.planet).icon} ${PL(item.planet).name}</span>` : '';
         let btn;
         if (owned) btn = `<button class="btn-buy ${equipped ? 'equipped' : ''}" data-action="cosmetic" data-id="${item.id}" type="button"><span>${equipped ? '✓ Надето' : 'Надеть'}</span>${equipped ? '<span class="buy-sub">снять</span>' : ''}</button>`;
         else if (item.code) btn = `<button class="btn-buy code-btn" data-action="codes" type="button"><span>🎁 Промокод</span><span class="buy-sub">только по коду</span></button>`;
+        else if (item.chest) btn = `<button class="btn-buy chest-btn" data-action="chests" type="button"><span>🧰 Сундук</span><span class="buy-sub">только из сундуков</span></button>`;
         else if (lockedPlanet) btn = `<button class="btn-buy" type="button" disabled><span>🔒 ${PL(item.planet).name}</span><span class="buy-sub">откройте планету</span></button>`;
         else btn = `<button class="btn-buy" data-action="cosmetic" data-id="${item.id}" type="button" ${canPay(item.cost) ? '' : 'disabled'}><span>Купить</span><span class="buy-cost">${costChips(item.cost)}</span></button>`;
         return `
@@ -2375,13 +2646,14 @@ function setupEvents() {
     else if (a === 'perk') buyPerk(id);
     else if (a === 'pperk') buyPlanetPerk(id);
     else if (a === 'cosmetic') handleCosmetic(id);
-    else if (a === 'rebirth') performRebirth();
+    else if (a === 'rebirth') performPrestige();
     else if (a === 'shoptab') { if (ui.shopTab !== id) { ui.shopTab = id; Sound.ui(); renderPanel(); animatePanel(); } }
     else if (a === 'lbrefresh') fetchLeaderboard();
     else if (a === 'lbboard') setLeaderboard(id, ui.lbPeriod);
     else if (a === 'lbperiod') setLeaderboard(ui.lbBoard, id);
     else if (a === 'buymode') setBuyMode(id);
     else if (a === 'codes') openCodes();
+    else if (a === 'chests') openShop();
   });
   $('evolveBtn').addEventListener('click', evolveEra);
   $('rankPill').addEventListener('click', () => { if (playing) selectTab('top'); });
@@ -2422,6 +2694,9 @@ function setupEvents() {
     if (e.target === $('questsOverlay')) $('questsOverlay').classList.remove('open');
   });
   $('shopClose').addEventListener('click', () => { $('shopOverlay').classList.remove('open'); Sound.ui(); });
+  $('chestList').addEventListener('click', (e) => { const b = e.target.closest('.chest-buy'); if (b && !b.disabled) openChest(b.dataset.chest); });
+  $('chestOverlay').addEventListener('click', (e) => { if (e.target.closest('#chestTake')) return; revealChest(); });
+  $('chestTake').addEventListener('click', () => { Sound.coin(); closeChest(); });
   $('shopQuests').addEventListener('click', () => { $('shopOverlay').classList.remove('open'); openQuests(); });
   $('shopCode').addEventListener('click', openCodes);
   $('shopOverlay').addEventListener('click', (e) => { if (e.target === $('shopOverlay')) $('shopOverlay').classList.remove('open'); });
@@ -2445,6 +2720,7 @@ window.__terraBack = function () {
   if (forcedUpdate) return true;   // окно «Нужно обновление» не закрывается
   if ($('updateOverlay').classList.contains('open')) { $('updateOverlay').classList.remove('open'); return true; }
   if ($('questsOverlay').classList.contains('open')) { $('questsOverlay').classList.remove('open'); return true; }
+  if ($('chestOverlay').classList.contains('open')) { if ($('chestOverlay').classList.contains('opened')) closeChest(); else revealChest(); return true; }
   if ($('shopOverlay').classList.contains('open')) { $('shopOverlay').classList.remove('open'); return true; }
   if ($('codeOverlay').classList.contains('open')) { $('codeOverlay').classList.remove('open'); return true; }
   return false;
@@ -2480,7 +2756,13 @@ setInterval(() => {
     autoAcc -= Math.floor(autoAcc);
     while (shots-- > 0) {
       if (activeAsteroid) { laserBeamTimer = 4; damageAsteroid(true); }
-      else ps(cur()).res[PL(cur()).clickRes] += clickGain();
+      else { const g = clickGain(); ps(cur()).res[PL(cur()).clickRes] += g; autoFx.pending++; autoFx.gain += g; }
+    }
+    // раз в секунду — всплывающая сумма, которую натапал автокликер
+    if (autoFx.gain > 0 && now - autoFx.shown > 1000 && !document.hidden) {
+      autoFx.shown = now;
+      showFloat(Math.min(cw - 90, autoSat.x + 6), Math.max(70, autoSat.y - 26), `🤖 +${fmt(autoFx.gain)} ${RES[PL(cur()).clickRes].icon}`, 'auto');
+      autoFx.gain = 0;
     }
   }
   refreshUI();

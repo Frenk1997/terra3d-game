@@ -45,16 +45,20 @@
   body.bg-default   { background: radial-gradient(120% 70% at 50% 0%, #121c3f 0%, #060b1d 55%, #02040d 100%); }
   body.bg-mars      { background: radial-gradient(120% 70% at 50% 0%, #4a1d0c 0%, #1f0a04 55%, #070201 100%); }
   body.bg-jupiter   { background: radial-gradient(120% 70% at 50% 0%, #4a3410 0%, #1f1505 55%, #070401 100%); }
-  body.bg-nebula    { background: radial-gradient(120% 70% at 50% 0%, #4a0f7a 0%, #1a0535 55%, #030108 100%); }
-  body.bg-deep      { background: radial-gradient(120% 70% at 50% 0%, #15132b 0%, #05040d 55%, #000 100%); }
-  body.bg-emerald   { background: radial-gradient(120% 70% at 50% 0%, #075e46 0%, #032a22 55%, #010807 100%); }
-  body.bg-supernova { background: radial-gradient(120% 70% at 50% 0%, #8c3410 0%, #3a1205 55%, #050101 100%); }
-  body.bg-cyber     { background: linear-gradient(160deg, #020617 0%, #231f66 50%, #020617 100%); }
-  body.bg-mars-sunset { background: linear-gradient(180deg, #1e3a5f 0%, #3b2a4a 35%, #7c2d12 75%, #1a0703 100%); }
-  body.bg-aurora    { background: linear-gradient(160deg, #053b33 0%, #3b0764 50%, #0b1026 100%); }
-  body.bg-founder   { background: radial-gradient(120% 70% at 50% 15%, #5c3d06 0%, #1c1203 55%, #050302 100%); }
-  body.bg-community { background: linear-gradient(160deg, #1e1b4b 0%, #4c1d95 50%, #0b1026 100%); }
-  body.bg-admin     { background: linear-gradient(160deg, #3b0a0a 0%, #0f172a 55%, #450a0a 100%); }
+  /* Купленный фон — только в окне космоса за планетой; интерфейс остаётся прежним */
+  #viewport[data-bg="bg-nebula"]    { background: radial-gradient(70% 60% at 30% 30%, rgba(168, 85, 247, 0.55), transparent 60%), radial-gradient(60% 50% at 75% 70%, rgba(236, 72, 153, 0.35), transparent 60%), radial-gradient(circle at 50% 50%, #1a0535, #05010d 85%); }
+  #viewport[data-bg="bg-deep"]      { background: radial-gradient(circle at 50% 50%, #0b0a1a, #000 80%); }
+  #viewport[data-bg="bg-emerald"]   { background: radial-gradient(60% 55% at 50% 40%, rgba(16, 185, 129, 0.45), transparent 65%), radial-gradient(circle at 50% 50%, #032a22, #010807 85%); }
+  #viewport[data-bg="bg-supernova"] { background: radial-gradient(45% 40% at 78% 22%, rgba(251, 146, 60, 0.75), rgba(220, 38, 38, 0.25) 45%, transparent 70%), radial-gradient(circle at 50% 50%, #3a1205, #050101 85%); }
+  #viewport[data-bg="bg-cyber"]     { background: linear-gradient(rgba(99, 102, 241, 0.16) 1px, transparent 1px) 0 0 / 22px 22px, linear-gradient(90deg, rgba(99, 102, 241, 0.16) 1px, transparent 1px) 0 0 / 22px 22px, linear-gradient(160deg, #020617, #231f66 50%, #020617); }
+  #viewport[data-bg="bg-mars-sunset"] { background: linear-gradient(180deg, #1e3a5f 0%, #3b2a4a 40%, #7c2d12 82%, #1a0703 100%); }
+  #viewport[data-bg="bg-aurora"]    { background: linear-gradient(165deg, rgba(16, 185, 129, 0.45), transparent 45%), linear-gradient(200deg, rgba(124, 58, 237, 0.5), transparent 55%), #0b1026; }
+  #viewport[data-bg="bg-founder"]   { background: radial-gradient(55% 50% at 50% 35%, rgba(250, 204, 21, 0.38), transparent 65%), radial-gradient(circle at 50% 50%, #1c1203, #050302 85%); }
+  #viewport[data-bg="bg-community"] { background: radial-gradient(60% 55% at 40% 35%, rgba(99, 102, 241, 0.55), transparent 65%), linear-gradient(160deg, #1e1b4b, #4c1d95 55%, #0b1026); }
+  #viewport[data-bg="bg-admin"]     { background: radial-gradient(60% 55% at 50% 40%, rgba(239, 68, 68, 0.38), transparent 65%), linear-gradient(160deg, #3b0a0a, #0f172a 55%, #450a0a); }
+  #viewport[data-bg="bg-galaxy"]    { background: radial-gradient(circle at 50% 46%, #fde68a 0 2%, rgba(167, 139, 250, 0.65) 9%, rgba(76, 29, 149, 0.4) 32%, transparent 62%), repeating-conic-gradient(from 20deg at 50% 46%, rgba(167, 139, 250, 0.2) 0 12deg, transparent 12deg 45deg), radial-gradient(circle at 50% 50%, #1e1b4b, #020617 80%); }
+  #viewport[data-bg="bg-blackhole"] { background: radial-gradient(circle at 50% 46%, #000 0 26%, rgba(251, 146, 60, 0.95) 29%, rgba(234, 88, 12, 0.5) 36%, transparent 52%), radial-gradient(circle at 50% 50%, #1c0a03, #000 80%); }
+  #viewport[data-bg="bg-rainbow"]   { background: linear-gradient(135deg, rgba(190, 24, 93, 0.55), rgba(124, 58, 237, 0.5) 30%, rgba(14, 165, 233, 0.45) 60%, rgba(16, 185, 129, 0.45) 85%), #020617; }
 
   /* ================= HEADER ================= */
   header {
@@ -281,6 +285,57 @@
   .update-sheet .sheet-stack { width: 100%; }
   .update-sheet .update-hint { font-size: 0.7rem; color: var(--text-dim); }
 
+
+  /* ================= МАГАЗИН И СУНДУКИ ================= */
+  .shop-sheet { max-width: 420px; padding: 16px 14px; gap: 10px; }
+  .shop-boost { font-size: 0.74rem; font-weight: 800; color: #fde68a; background: rgba(250, 204, 21, 0.12); border: 1px solid rgba(250, 204, 21, 0.45); border-radius: 12px; padding: 7px 10px; text-align: center; }
+  .chest-list { display: flex; flex-direction: column; gap: 8px; }
+  .chest-card { display: flex; align-items: center; gap: 10px; padding: 11px; border-radius: 16px; background: linear-gradient(135deg, color-mix(in srgb, var(--c) 22%, transparent), rgba(255, 255, 255, 0.03)); background: linear-gradient(135deg, rgba(255,255,255,0.07), rgba(255, 255, 255, 0.03)); border: 1px solid rgba(255,255,255,0.2); border: 1px solid color-mix(in srgb, var(--c) 55%, transparent); animation: rise 0.35s ease both; animation-delay: calc(var(--i) * 0.06s); }
+  .chest-ico { font-size: 2.1rem; width: 50px; text-align: center; filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5)); animation: chestIdle 2.8s ease-in-out infinite; animation-delay: calc(var(--i) * 0.4s); }
+  @keyframes chestIdle { 0%, 80%, 100% { transform: none; } 85% { transform: rotate(-8deg); } 90% { transform: rotate(8deg); } 95% { transform: rotate(-4deg); } }
+  .chest-info { flex: 1; min-width: 0; }
+  .chest-name { font-weight: 900; font-size: 0.86rem; }
+  .chest-desc { font-size: 0.66rem; color: var(--text-dim); margin-top: 2px; line-height: 1.3; }
+  .chest-odds { font-size: 0.6rem; color: #c7d2fe; margin-top: 4px; line-height: 1.3; }
+  .chest-buy { border: none; border-radius: 12px; padding: 8px 11px; background: linear-gradient(135deg, #2563eb, #7c3aed); color: #fff; font-weight: 900; font-size: 0.74rem; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 2px; flex-shrink: 0; box-shadow: 0 4px 14px rgba(91, 140, 255, 0.4); }
+  .chest-buy span { font-size: 0.7rem; color: #bfdbfe; }
+  .chest-buy:disabled { background: #151d38; color: #7686ad; box-shadow: none; cursor: not-allowed; }
+  .chest-buy:disabled span { color: #7686ad; }
+  .chest-note { font-size: 0.66rem; color: var(--text-dim); text-align: center; }
+  .chest-overlay { z-index: 620; background: rgba(2, 4, 13, 0.94); cursor: pointer; }
+  .chest-stage { position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; max-width: 380px; text-align: center; }
+  .chest-rays { position: absolute; left: 50%; top: 70px; width: 520px; height: 520px; margin: -260px 0 0 -260px; border-radius: 50%; background: repeating-conic-gradient(from 0deg, rgba(255,255,255,0.12) 0 10deg, transparent 10deg 30deg); background: repeating-conic-gradient(from 0deg, color-mix(in srgb, var(--c) 35%, transparent) 0 10deg, transparent 10deg 30deg); opacity: 0; pointer-events: none; -webkit-mask: radial-gradient(circle, #000 20%, transparent 65%); mask: radial-gradient(circle, #000 20%, transparent 65%); }
+  .chest-big { font-size: 6rem; line-height: 1; margin-top: 18px; filter: drop-shadow(0 10px 30px rgba(0, 0, 0, 0.6)); }
+  .chest-overlay.open:not(.opened) .chest-big { animation: chestShake 0.5s ease-in-out infinite; }
+  @keyframes chestShake { 0%, 100% { transform: rotate(0) scale(1); } 25% { transform: rotate(-10deg) scale(1.04); } 75% { transform: rotate(10deg) scale(1.04); } }
+  .chest-overlay.opened .chest-big { animation: chestPop 0.6s cubic-bezier(0.2, 1.6, 0.4, 1) both; }
+  @keyframes chestPop { 0% { transform: scale(1.4); filter: brightness(3) drop-shadow(0 0 40px #fff); } 100% { transform: scale(0.8); } }
+  .chest-overlay.opened .chest-rays { animation: raysIn 0.6s ease forwards, raysSpin 14s linear infinite; }
+  @keyframes raysIn { to { opacity: 1; } }
+  @keyframes raysSpin { to { transform: rotate(360deg); } }
+  .chest-title { font-weight: 900; font-size: 1.2rem; }
+  .chest-hint { font-size: 0.75rem; color: var(--text-dim); }
+  .chest-overlay.opened .chest-hint { display: none; }
+  .chest-rewards { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; width: 100%; position: relative; }
+  .cr-item { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 10px 6px; border-radius: 14px; background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.14); animation: rise 0.45s cubic-bezier(0.2, 1.4, 0.4, 1) both; animation-delay: calc(0.15s + var(--i) * 0.12s); }
+  .cr-item span { font-size: 1.6rem; }
+  .cr-item b { font-size: 0.9rem; font-weight: 900; }
+  .cr-item i { font-style: normal; font-size: 0.6rem; color: var(--text-dim); }
+  .cr-item.boost { border-color: rgba(250, 204, 21, 0.6); background: rgba(250, 204, 21, 0.12); }
+  .cr-item.rare { grid-column: 1 / -1; border-color: rgba(251, 191, 36, 0.8); background: linear-gradient(135deg, rgba(251, 191, 36, 0.25), rgba(168, 85, 247, 0.22)); box-shadow: 0 0 24px rgba(251, 191, 36, 0.35); }
+  .chest-take { min-width: 200px; flex: none; position: relative; animation: rise 0.4s ease both; }
+  .planet-badge.chest { background: rgba(251, 191, 36, 0.2); color: #fde68a; border-color: rgba(251, 191, 36, 0.5); }
+  .btn-buy.chest-btn { background: linear-gradient(135deg, #d97706, #db2777); box-shadow: 0 4px 14px rgba(217, 119, 6, 0.35); }
+
+  /* ускоритель, автокликер, престиж, гость */
+  .speed-badge.boost { color: #fde68a; border-color: rgba(250, 204, 21, 0.6); background: rgba(250, 204, 21, 0.14); animation: sideGlow 1.6s ease-in-out infinite; }
+  .floating-text.auto { color: #fde68a; font-size: 0.78rem; text-shadow: 0 1px 4px #000; }
+  .reb-bar { height: 4px; border-radius: 99px; background: rgba(255, 255, 255, 0.1); overflow: hidden; margin: -1px 0 3px; }
+  .reb-bar i { display: block; height: 100%; background: linear-gradient(90deg, #a855f7, #ec4899); border-radius: inherit; }
+  .pp-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .pp-chip { font-size: 0.66rem; font-weight: 800; padding: 4px 8px; border-radius: 99px; background: rgba(0, 0, 0, 0.25); border: 1px solid rgba(216, 180, 254, 0.3); color: #e9d5ff; }
+  .pp-chip.cur { border-color: rgba(216, 180, 254, 0.8); background: rgba(168, 85, 247, 0.25); }
+  .guest-note { font-size: 0.66rem; color: var(--text-dim); text-align: center; margin-top: -4px; }
 
   /* ================= КНОПКИ КВЕСТЫ / МАГАЗИН ================= */
   .viewport-side { position: absolute; top: 44px; left: 0; right: 0; z-index: 5; padding: 0 10px; display: flex; justify-content: space-between; pointer-events: none; }
@@ -581,13 +636,14 @@
   <div class="login-card">
     <div class="hero-planet"></div>
     <div class="login-title">TERRA</div>
-    <div class="login-sub">Создай свою планету, пройди десять эпох, покори Солнечную систему и поднимись в рейтинге настоящих игроков.</div>
+    <div class="login-sub">Создай свою планету, пройди пятнадцать эпох, покори Солнечную систему и поднимись в рейтинге настоящих игроков.</div>
     <div class="login-actions" id="loginActions">
       <button class="btn-google" id="googleBtn" type="button" hidden>
         <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
         Войти через Google
       </button>
-      <button class="btn-demo" id="demoBtn" type="button" hidden>Демо-режим (без аккаунта и рейтинга)</button>
+      <button class="btn-demo" id="demoBtn" type="button" hidden>👤 Играть как гость</button>
+      <div class="guest-note">Гость играет без сохранения прогресса</div>
       <a class="btn-apk" id="apkLink" href="#" target="_blank" rel="noopener" hidden>📱 Скачать для Android</a>
     </div>
     <div class="login-loader" id="loginLoader" hidden>
@@ -654,26 +710,33 @@
   </div>
 </div>
 
-<!-- ===== Магазин (скоро) ===== -->
+<!-- ===== Магазин: сундуки за сапфиры ===== -->
 <div class="overlay" id="shopOverlay">
-  <div class="sheet soon-sheet">
-    <div class="soon-ribbon">СКОРО</div>
-    <div class="soon-ico">🛒</div>
-    <h2>Магазин сапфиров</h2>
-    <p>Скоро здесь появятся особые товары за 🔷 сапфиры. Уже готовим:</p>
-    <div class="soon-grid">
-      <div class="soon-item"><span>🎁</span><b>Сундуки</b><i>🔒</i></div>
-      <div class="soon-item"><span>⚡</span><b>Ускорители</b><i>🔒</i></div>
-      <div class="soon-item"><span>👑</span><b>Редкий образ</b><i>🔒</i></div>
-      <div class="soon-item"><span>🪐</span><b>Сюрприз</b><i>🔒</i></div>
+  <div class="sheet shop-sheet">
+    <div class="q-head">
+      <div><h2>🛒 Магазин</h2><div class="q-sub">Сундуки за сапфиры</div></div>
+      <div class="q-wallet" id="shopWallet" title="Сапфиры">🔷 <b id="shopSapph">0</b></div>
+      <button class="btn-icon" id="shopClose" type="button">✕</button>
     </div>
-    <div class="soon-wallet">У вас: 🔷 <b id="shopSapph">0</b> сапфиров</div>
-    <p class="soon-hint">Копите сапфиры заранее — выполняйте квесты.</p>
+    <div class="shop-boost" id="shopBoost" hidden></div>
+    <div class="chest-list" id="chestList"></div>
+    <div class="chest-note" id="chestNote"></div>
     <div class="sheet-stack">
-      <button class="btn-main" id="shopQuests" type="button">📜 К квестам</button>
+      <button class="btn-soft" id="shopQuests" type="button">📜 Где взять сапфиры? — Квесты</button>
       <button class="btn-soft" id="shopCode" type="button">🎁 Ввести промокод</button>
-      <button class="btn-soft" id="shopClose" type="button">Закрыть</button>
     </div>
+  </div>
+</div>
+
+<!-- ===== Открытие сундука ===== -->
+<div class="overlay chest-overlay" id="chestOverlay">
+  <div class="chest-stage">
+    <div class="chest-rays"></div>
+    <div class="chest-big" id="chestBig">🎁</div>
+    <div class="chest-title" id="chestTitle"></div>
+    <div class="chest-hint">Нажмите, чтобы открыть</div>
+    <div class="chest-rewards" id="chestRewards"></div>
+    <button class="btn-main chest-take" id="chestTake" type="button" hidden>Забрать</button>
   </div>
 </div>
 
