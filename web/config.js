@@ -3,7 +3,7 @@
 window.TERRA_CONFIG = {
   // Адрес вашего сервера Cloudflare, например 'https://terra-api.myname.workers.dev' (без «/» в конце).
   // Пока здесь заглушка, APK работает только в демо-режиме (без входа и рейтинга).
-  API_URL: 'https://terra-api.YOUR-SUBDOMAIN.workers.dev',
+  API_URL: 'https://terra-api.terra3d.workers.dev',
 
   // Ссылка «Скачать для Android» на сайте. Оставьте пустой — сценарий деплоя подставит её сам.
   APK_URL: ''
