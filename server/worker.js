@@ -1081,14 +1081,17 @@ async function handleClient(request, env) {
 const TWITCH_PREFIX = 'tw_';
 const LINK_TTL_MS = 10 * 60 * 1000;   // код привязки живёт 10 минут
 
+// последняя попытка входа из панели — для проверки настройки (GET /api/twitch/status, без секретов и личных данных)
+let twitchLast = null;
 async function verifyTwitchJwt(token, env) {
   const secrets = String(env.TWITCH_EXT_SECRET || '').split(/[\s,]+/).filter(Boolean);
   token = String(token || '');
   const p = token.split('.');
-  if (!secrets.length || p.length !== 3 || token.length > 4000) return null;
+  if (!secrets.length) return { fail: 'no_secret' };
+  if (p.length !== 3 || token.length > 4000) return { fail: 'malformed' };
   let header, payload, sig;
-  try { header = JSON.parse(b64urlToStr(p[0])); payload = JSON.parse(b64urlToStr(p[1])); sig = b64urlToBytes(p[2]); } catch (e) { return null; }
-  if (!header || header.alg !== 'HS256' || !payload || typeof payload !== 'object') return null;
+  try { header = JSON.parse(b64urlToStr(p[0])); payload = JSON.parse(b64urlToStr(p[1])); sig = b64urlToBytes(p[2]); } catch (e) { return { fail: 'malformed' }; }
+  if (!header || header.alg !== 'HS256' || !payload || typeof payload !== 'object') return { fail: 'bad_alg' };
   const data = enc.encode(`${p[0]}.${p[1]}`);
   let ok = false;
   for (const s of secrets) {
@@ -1098,17 +1101,24 @@ async function verifyTwitchJwt(token, env) {
     const key = await crypto.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
     if (await crypto.subtle.verify('HMAC', key, sig, data)) { ok = true; break; }
   }
-  if (!ok || !Number.isFinite(payload.exp) || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  if (!ok) return { fail: 'bad_signature' };
+  if (!Number.isFinite(payload.exp) || payload.exp < Math.floor(Date.now() / 1000)) return { fail: 'expired' };
   const id = String(payload.opaque_user_id || '');
   return { id, logged: /^U[A-Za-z0-9]{1,64}$/.test(id) };
 }
 async function twitchViewer(request, env) {
-  if (!env.TWITCH_EXT_SECRET) return { err: fail(503, 'twitch_not_configured') };
   const body = await readJson(request);
   const tw = await verifyTwitchJwt(body && body.token, env);
-  if (!tw) return { err: fail(401, 'invalid_twitch_token') };
+  twitchLast = { at: Date.now(), result: tw.fail || (tw.logged ? 'ok' : 'anonymous') };
+  if (tw.fail === 'no_secret') return { err: fail(503, 'twitch_not_configured') };
+  if (tw.fail) return { err: fail(401, 'invalid_twitch_token') };
   if (!tw.logged) return { err: fail(403, 'twitch_login_required') };
   return { tw, body };
+}
+function handleTwitchStatus(env) {
+  const secrets = String(env.TWITCH_EXT_SECRET || '').split(/[\s,]+/).filter(Boolean);
+  const b64 = secrets.map(s => { try { return /^[A-Za-z0-9+/]+={0,2}$/.test(s) && atob(s).length >= 16; } catch (e) { return false; } });
+  return json({ configured: secrets.length > 0, secrets: secrets.length, secretsBase64: b64, last: twitchLast });
 }
 async function sessionReply(env, sub, extra = {}) {
   const token = await signSession(sub, env);
@@ -1238,6 +1248,7 @@ export default {
       if (path === '/api/auth/exchange' && m === 'POST') return await handleExchange(request, env);
       if (path === '/api/auth/twitch' && m === 'POST') return await handleTwitchAuth(request, env);
       if (path === '/api/twitch/link' && m === 'POST') return await handleTwitchLink(request, env);
+      if (path === '/api/twitch/status' && m === 'GET') return handleTwitchStatus(env);
       if (path === '/auth/google/start' && m === 'GET') return await handleAuthStart(url, env);
       if (path === '/auth/google/callback' && m === 'GET') return await handleAuthCallback(url, env);
 
