@@ -70,7 +70,7 @@ if [ -n "$MOVED_TO" ]; then
   # игра переехала на свой сервер: здесь — только страница-переадресация (переносит вход на новый адрес)
   mkdir public
   sed "s#__TO__#${MOVED_TO}#g" vps/moved.html > public/index.html
-  cp ../web/privacy.html ../web/icon-192.png public/
+  cp ../web/privacy.html ../web/terms.html ../web/icon-192.png public/
   echo "Игра переехала на ${MOVED_TO} — Cloudflare только переадресует туда"
 else
   cp -R ../web public

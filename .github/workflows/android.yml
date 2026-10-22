@@ -8,6 +8,8 @@ on:
     branches: [main, master]
     paths:
       - 'web/**'
+      - '!web/privacy.html'   # тексты политики и условий — только на сервере, без нового APK
+      - '!web/terms.html'
       - 'android/**'
       - '.github/workflows/android.yml'
   workflow_dispatch:

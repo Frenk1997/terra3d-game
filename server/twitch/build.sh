@@ -16,10 +16,12 @@ API="${API%/}"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/p/js"
 cp "$ROOT/web/js/data.js" "$ROOT/web/js/sound.js" "$ROOT/web/js/game.js" "$T/p/js/"
-cp "$ROOT/web/icon-192.png" "$ROOT/web/privacy.html" "$T/p/"
+cp "$ROOT/web/icon-192.png" "$ROOT/web/privacy.html" "$ROOT/web/terms.html" "$T/p/"
 cat > "$T/p/config.js" <<CFG
 // Сборка для Twitch (server/twitch/build.sh): вход через аккаунт Twitch, сервер игры:
 window.TERRA_CONFIG = { API_URL: '$API', APK_URL: '', TWITCH: true };
+// под трансляцией фоновая музыка по умолчанию выключена — не мешает звуку стрима (включается в ⚙️)
+try { if (localStorage.getItem('terra_music') === null) localStorage.setItem('terra_music', 'off'); } catch (e) {}
 CFG
 # библиотека Twitch подключается первой; других внешних скриптов у игры нет
 python3 - "$ROOT/web/index.html" "$T/p/index.html" "$HELPER" <<'PY'
