@@ -8,6 +8,7 @@
 #   SERVER_DOMAIN       (необязательно) свой домен; без него адрес будет https://<IP-через-дефисы>.sslip.io
 #   ACME_EMAIL          (необязательно) почта для писем Let's Encrypt о сертификате
 #   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, SESSION_SECRET, PROMO_CODES, FORCE_UPDATE, TWITCH_EXT_SECRET — как для Cloudflare
+#   YANDEX_CLIENT_ID, YANDEX_CLIENT_SECRET (вход с Яндекс ID), ADMIN_CODE (свой код чит-меню) — необязательные
 set -euo pipefail
 cd "$(dirname "$0")/.."     # папка server/
 
@@ -140,7 +141,7 @@ AWAIT=false
 [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && AWAIT=true    # пока база не перенесена с Cloudflare — техработы
 PUBLIC_URL="$PUBLIC_URL" GITHUB_REPO="$REPO" SITE_VERSION="$SITE_VERSION" AWAIT="$AWAIT" OUT="$B/config.json" node -e '
   const e = process.env, env = {};
-  for (const k of ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "SESSION_SECRET", "PROMO_CODES", "FORCE_UPDATE", "TWITCH_EXT_SECRET", "GITHUB_REPO", "SITE_VERSION"]) if (e[k]) env[k] = e[k];
+  for (const k of ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "SESSION_SECRET", "PROMO_CODES", "FORCE_UPDATE", "TWITCH_EXT_SECRET", "YANDEX_CLIENT_ID", "YANDEX_CLIENT_SECRET", "ADMIN_CODE", "GITHUB_REPO", "SITE_VERSION"]) if (e[k]) env[k] = e[k];
   const cfg = { port: 8787, host: "127.0.0.1", dataDir: "/var/lib/terra", publicUrl: e.PUBLIC_URL, awaitMigration: e.AWAIT === "true", env };
   require("fs").writeFileSync(e.OUT, JSON.stringify(cfg, null, 2), { mode: 0o600 });'
 chmod 600 "$B/config.json"

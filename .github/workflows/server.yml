@@ -51,6 +51,9 @@ jobs:
           PROMO_CODES: ${{ secrets.PROMO_CODES }}
           FORCE_UPDATE: ${{ secrets.FORCE_UPDATE }}
           TWITCH_EXT_SECRET: ${{ secrets.TWITCH_EXT_SECRET }}
+          YANDEX_CLIENT_ID: ${{ secrets.YANDEX_CLIENT_ID }}
+          YANDEX_CLIENT_SECRET: ${{ secrets.YANDEX_CLIENT_SECRET }}
+          ADMIN_CODE: ${{ secrets.ADMIN_CODE }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: bash server/vps/deploy.sh
 

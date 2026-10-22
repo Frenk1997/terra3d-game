@@ -41,14 +41,21 @@ const Sound = (() => {
   function resume() { paused = false; if (!unlocked) return; try { if (ctx) ctx.resume(); } catch (e) {} if (musicOn) Music.start(); }
 
   // ---------- фоновая музыка ----------
+  // У каждого измерения свой вайб: Солнечная система — спокойный космос; CS2 — тёмный, собранный, с пульсом
+  // баса и тихим хай-хэтом; Майнкрафт — неспешное «пианино» с паузами, светло и немного ностальгично.
+  const PROFILES = {
+    sol: { chords: [[0, 4, 7, 11], [-3, 0, 4, 7], [-7, -3, 0, 4], [2, 5, 9, 12, 16], [4, 7, 11, 12], [-7, -3, 0, 4], [-3, 0, 4, 7], [-5, -1, 2, 4]],
+      scale: [12, 14, 16, 19, 21, 24, 26, 28, 31], sec: 9, pad: 'sine', padVol: 0.032, pluckGap: [1.3, 2.6], pluck: 'mix', root: 0 },
+    cs:  { chords: [[-3, 0, 4, 7], [-7, -3, 0, 5], [-8, -4, -1, 3], [-5, -1, 2, 7], [-3, 0, 4, 7], [-10, -7, -3, 0], [-8, -4, -1, 3], [-5, -1, 2, 5]],
+      scale: [9, 12, 14, 16, 19, 21, 24], sec: 6, pad: 'sawtooth', padVol: 0.012, padCut: 700, pluckGap: [0.9, 1.8], pluck: 'triangle', root: -3, beat: true },
+    mc:  { chords: [[0, 4, 7, 11], [5, 9, 12, 16], [-3, 0, 4, 7], [5, 9, 12, 14], [0, 4, 7, 14], [-5, -1, 2, 7], [5, 9, 12, 16], [-1, 2, 7, 11]],
+      scale: [12, 16, 19, 23, 24, 28, 31, 35], sec: 11, pad: 'sine', padVol: 0.022, pluckGap: [0.5, 1.6], pluck: 'piano', root: 0, phrase: true }
+  };
   const Music = (() => {
     const C3 = 130.81;
     const hz = (semi) => C3 * Math.pow(2, semi / 12);
-    // Cmaj7 → Am7 → Fmaj7 → Dm9 → Cmaj7/E → Fmaj7 → Am7 → G6 — спокойно и без резких смен
-    const CHORDS = [[0, 4, 7, 11], [-3, 0, 4, 7], [-7, -3, 0, 4], [2, 5, 9, 12, 16], [4, 7, 11, 12], [-7, -3, 0, 4], [-3, 0, 4, 7], [-5, -1, 2, 4]];
-    const PENTA = [12, 14, 16, 19, 21, 24, 26, 28, 31];
-    const CHORD_SEC = 9;
-    let timer = null, nextChord = 0, nextPluck = 0, idx = 0, delayIn = null, running = false;
+    let P = PROFILES.sol, CHORDS = P.chords, PENTA = P.scale, CHORD_SEC = P.sec;
+    let timer = null, nextChord = 0, nextPluck = 0, nextBeat = 0, beatN = 0, idx = 0, delayIn = null, running = false;
     function bus() {
       if (delayIn) return;
       const c = ctx;
@@ -74,28 +81,67 @@ const Sound = (() => {
       const ch = CHORDS[idx % CHORDS.length]; idx++;
       const dur = CHORD_SEC + 3;
       ch.forEach((s, i) => {
-        voice(hz(s), t0, dur, 0.032, 'sine', 1400, (i % 2 ? 6 : -6));
-        voice(hz(s + 12), t0 + 0.3, dur, 0.012, 'triangle', 1800, (i % 2 ? -8 : 8));
+        voice(hz(s), t0, dur, P.padVol, P.pad, P.padCut || 1400, (i % 2 ? 6 : -6));
+        voice(hz(s + 12), t0 + 0.3, dur, P.padVol * 0.38, 'triangle', 1800, (i % 2 ? -8 : 8));
       });
       voice(hz(ch[0] - 12), t0, dur, 0.05, 'sine', 400);
     }
+    // одна нота: обычная «капля» или мягкое «пианино» (несколько гармоник, быстрая атака, долгий спад)
+    function note(t0, semi, vol, kind) {
+      const c = ctx, f = hz(semi);
+      const parts = kind === 'piano' ? [[1, 1, 'triangle'], [2, 0.35, 'sine'], [3, 0.12, 'sine']] : [[1, 1, kind === 'mix' ? (Math.random() < 0.5 ? 'triangle' : 'sine') : kind]];
+      const len = kind === 'piano' ? 3.2 : 2.6;
+      parts.forEach(([m, v, type]) => {
+        const o = c.createOscillator(), g = c.createGain();
+        o.type = type; o.frequency.value = f * m;
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(vol * v, t0 + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + len / m);
+        o.connect(g); g.connect(musicBus); g.connect(delayIn);
+        o.start(t0); o.stop(t0 + len + 0.2);
+      });
+    }
     function pluck(t0) {
-      const c = ctx, semi = PENTA[Math.floor(Math.random() * PENTA.length)];
-      const o = c.createOscillator(), g = c.createGain();
-      o.type = Math.random() < 0.5 ? 'triangle' : 'sine'; o.frequency.value = hz(semi);
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(0.03, t0 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 2.6);
-      o.connect(g); g.connect(musicBus); g.connect(delayIn);
-      o.start(t0); o.stop(t0 + 2.8);
+      const semi = PENTA[Math.floor(Math.random() * PENTA.length)];
+      note(t0, semi, P.pluck === 'piano' ? 0.026 : 0.03, P.pluck);
+      // в Майнкрафте ноты иногда идут короткой фразой — вверх или вниз по ладу
+      if (P.phrase && Math.random() < 0.4) {
+        let k = PENTA.indexOf(semi);
+        const dir = Math.random() < 0.5 ? -1 : 1;
+        for (let j = 1; j <= 2; j++) { k = Math.min(PENTA.length - 1, Math.max(0, k + dir)); note(t0 + j * 0.42, PENTA[k], 0.02, 'piano'); }
+      }
+    }
+    // CS2: приглушённый пульс баса по восьмым и тихий хай-хэт — напряжение перед раундом
+    function beat(t0) {
+      const c = ctx, ch = CHORDS[(idx + CHORDS.length - 1) % CHORDS.length];
+      const o = c.createOscillator(), g = c.createGain(), f = c.createBiquadFilter();
+      o.type = 'sawtooth'; o.frequency.value = hz(ch[0] - 12); f.type = 'lowpass'; f.frequency.value = 260;
+      g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(beatN % 4 === 0 ? 0.05 : 0.028, t0 + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+      o.connect(f); f.connect(g); g.connect(musicBus); o.start(t0); o.stop(t0 + 0.25);
+      if (beatN % 2 === 1 && noiseBuf) {
+        const src = c.createBufferSource(), hf = c.createBiquadFilter(), hg = c.createGain();
+        src.buffer = noiseBuf; hf.type = 'highpass'; hf.frequency.value = 7000;
+        hg.gain.setValueAtTime(0.0001, t0); hg.gain.exponentialRampToValueAtTime(0.012, t0 + 0.005); hg.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.05);
+        src.connect(hf); hf.connect(hg); hg.connect(musicBus); src.start(t0); src.stop(t0 + 0.06);
+      }
+      beatN++;
     }
     function tick() {
       if (!running || paused || !ctx || ctx.state !== 'running') return;
       const now = ctx.currentTime;
       if (now + 0.6 > nextChord) { chord(Math.max(now + 0.05, nextChord)); nextChord = Math.max(now, nextChord) + CHORD_SEC; }
-      if (now + 0.4 > nextPluck) { pluck(Math.max(now + 0.05, nextPluck)); nextPluck = Math.max(now, nextPluck) + 1.3 + Math.random() * 2.6; }
+      if (now + 0.4 > nextPluck) { pluck(Math.max(now + 0.05, nextPluck)); nextPluck = Math.max(now, nextPluck) + P.pluckGap[0] + Math.random() * P.pluckGap[1]; }
+      if (P.beat) while (nextBeat < now + 0.5) { if (nextBeat > now - 0.05) beat(nextBeat); nextBeat = Math.max(nextBeat, now - 0.05) + 0.34; }
     }
     return {
+      // смена измерения: со следующего аккорда играет другая музыка
+      profile(u) {
+        const np = PROFILES[u] || PROFILES.sol;
+        if (np === P) return;
+        P = np; CHORDS = P.chords; PENTA = P.scale; CHORD_SEC = P.sec; idx = 0;
+        if (ctx) { nextChord = Math.min(nextChord, ctx.currentTime + 1.2); nextBeat = ctx.currentTime + 1.5; }
+        if (P.beat) getNoise();
+      },
       start() {
         if (!musicOn || !unlocked || paused) return;
         const c = context(); if (!c) return;
@@ -131,13 +177,16 @@ const Sound = (() => {
     osc.start(t0); osc.stop(t0 + dur + 0.05);
   }
 
+  function getNoise() {
+    if (!ctx || noiseBuf) return noiseBuf;
+    noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 1.5, ctx.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    return noiseBuf;
+  }
   function noise({ dur = 0.3, vol = 0.3, delay = 0, from = 2000, to = 200, type = 'lowpass', q = 0.8 }) {
     const c = ensure(); if (!c) return;
-    if (!noiseBuf) {
-      noiseBuf = c.createBuffer(1, c.sampleRate * 1.5, c.sampleRate);
-      const d = noiseBuf.getChannelData(0);
-      for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    }
+    getNoise();
     const t0 = c.currentTime + delay;
     const src = c.createBufferSource(); src.buffer = noiseBuf;
     const f = c.createBiquadFilter(); f.type = type; f.Q.value = q;
@@ -168,12 +217,85 @@ const Sound = (() => {
     setSfxVolume(v) { sfxVol = Math.min(1, Math.max(0, v)); store('terra_sfx_vol', sfxVol.toFixed(2)); if (master) master.gain.value = 0.55 * sfxVol; },
     setMusicVolume(v) { musicVol = Math.min(1, Math.max(0, v)); store('terra_music_vol', musicVol.toFixed(2)); if (musicOn && Music.running) Music.fade(0.22 * musicVol); },
     suspend, resume,
-    // тап по планете
-    tap(crit) {
+    // тап по планете; style — звук тапа из магазина, n — номер тапа в серии (для мелодичных звуков)
+    tap(crit, style = 'default', n = 0) {
       if (!throttle('tap', 45)) return;
-      const f = 520 + Math.random() * 120;
-      if (crit) { tone({ freq: f * 1.5, to: f * 3, type: 'triangle', dur: 0.18, vol: 0.22 }); tone({ freq: f * 2, type: 'sine', dur: 0.25, vol: 0.12, delay: 0.04 }); }
-      else tone({ freq: f, to: f * 1.6, type: 'triangle', dur: 0.08, vol: 0.13 });
+      const PENT = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21];
+      const step = (base) => base * Math.pow(2, PENT[(n || 0) % PENT.length] / 12);
+      switch (style) {
+        case 'keyboard':   // щелчок механической клавиши
+          noise({ dur: 0.035, vol: crit ? 0.32 : 0.22, from: 5200, to: 2600, type: 'bandpass', q: 1.5 });
+          tone({ freq: 2200, type: 'square', dur: 0.018, vol: 0.04, filter: 4000 });
+          if (crit) noise({ dur: 0.03, vol: 0.2, from: 4800, to: 2400, type: 'bandpass', q: 1.5, delay: 0.06 });
+          return;
+        case 'mouse':
+          noise({ dur: 0.016, vol: 0.28, from: 6000, to: 3000, type: 'highpass', q: 0.7 });
+          tone({ freq: 1400, type: 'square', dur: 0.012, vol: 0.05, filter: 3000 });
+          if (crit) noise({ dur: 0.016, vol: 0.25, from: 6000, to: 3000, type: 'highpass', q: 0.7, delay: 0.07 });
+          return;
+        case 'bubble':
+          tone({ freq: 280 + Math.random() * 80, to: 900 + Math.random() * 300, type: 'sine', dur: 0.09, vol: 0.2 });
+          if (crit) tone({ freq: 500, to: 1600, type: 'sine', dur: 0.1, vol: 0.16, delay: 0.07 });
+          return;
+        case 'drum':
+          tone({ freq: crit ? 190 : 150, to: 45, type: 'sine', dur: 0.18, vol: 0.38 });
+          noise({ dur: 0.05, vol: 0.12, from: 1200, to: 200 });
+          if (crit) noise({ dur: 0.12, vol: 0.2, from: 6000, to: 2000, type: 'highpass', delay: 0.02 });
+          return;
+        case 'piano': {
+          const f = step(262);
+          tone({ freq: f, type: 'triangle', dur: 0.5, vol: 0.16, attack: 0.004 });
+          tone({ freq: f * 2, type: 'sine', dur: 0.3, vol: 0.05, attack: 0.004 });
+          if (crit) tone({ freq: f * 1.5, type: 'triangle', dur: 0.5, vol: 0.12, delay: 0.05 });
+          return;
+        }
+        case 'laser':
+          tone({ freq: crit ? 2400 : 1700, to: 180, type: 'sawtooth', dur: crit ? 0.2 : 0.12, vol: 0.09, filter: 3500 });
+          return;
+        case 'coin':
+          tone({ freq: 988, type: 'square', dur: 0.05, vol: 0.07, filter: 5000 });
+          tone({ freq: 1319, type: 'square', dur: crit ? 0.3 : 0.16, vol: 0.07, delay: 0.05, filter: 5000 });
+          return;
+        case 'chip': {
+          const f = step(523);
+          tone({ freq: f, type: 'square', dur: 0.06, vol: 0.06, filter: 6000 });
+          if (crit) { tone({ freq: f * 1.25, type: 'square', dur: 0.06, vol: 0.06, delay: 0.06, filter: 6000 }); tone({ freq: f * 1.5, type: 'square', dur: 0.08, vol: 0.06, delay: 0.12, filter: 6000 }); }
+          return;
+        }
+        case 'wood': {
+          const f = step(523);
+          tone({ freq: f, type: 'sine', dur: 0.22, vol: 0.2, attack: 0.002 });
+          tone({ freq: f * 4, type: 'sine', dur: 0.05, vol: 0.05, attack: 0.002 });
+          if (crit) tone({ freq: f * 2, type: 'sine', dur: 0.25, vol: 0.14, delay: 0.06 });
+          return;
+        }
+        case 'glass': {
+          const f = 1800 + Math.random() * 900;
+          tone({ freq: f, type: 'sine', dur: 0.7, vol: 0.08, attack: 0.003 });
+          tone({ freq: f * 1.003, type: 'sine', dur: 0.7, vol: 0.05, attack: 0.003 });
+          if (crit) tone({ freq: f * 1.5, type: 'sine', dur: 0.8, vol: 0.06, delay: 0.05 });
+          return;
+        }
+        case 'block':   // кирка по камню
+          noise({ dur: 0.07, vol: crit ? 0.4 : 0.28, from: 1600, to: 500, type: 'bandpass', q: 2 });
+          tone({ freq: 210 + Math.random() * 40, type: 'square', dur: 0.05, vol: 0.06, filter: 900 });
+          return;
+        default: {
+          const f = 520 + Math.random() * 120;
+          if (crit) { tone({ freq: f * 1.5, to: f * 3, type: 'triangle', dur: 0.18, vol: 0.22 }); tone({ freq: f * 2, type: 'sine', dur: 0.25, vol: 0.12, delay: 0.04 }); }
+          else tone({ freq: f, to: f * 1.6, type: 'triangle', dur: 0.08, vol: 0.13 });
+        }
+      }
+    },
+    // измерение сменилось — другая музыка
+    setUniverse(u) { Music.profile(u); },
+    // чёрная дыра: гул нарастает, затягивает — и вспышка
+    blackhole() {
+      noise({ dur: 2.2, vol: 0.22, from: 120, to: 900, type: 'lowpass', q: 4 });
+      tone({ freq: 220, to: 40, type: 'sawtooth', dur: 2.1, vol: 0.06, filter: 600, attack: 0.4 });
+      tone({ freq: 55, to: 30, type: 'sine', dur: 2.2, vol: 0.3, attack: 0.3 });
+      noise({ dur: 1.2, vol: 0.3, from: 400, to: 8000, type: 'bandpass', q: 1, delay: 2.0 });
+      notes(392, [0, 7, 12, 19, 24]).forEach((f, i) => tone({ freq: f, type: 'sine', dur: 1.2, vol: 0.09, delay: 2.2 + i * 0.09, attack: 0.02 }));
     },
     // мягкий щелчок интерфейса
     ui() { if (throttle('ui', 40)) tone({ freq: 880, to: 660, type: 'sine', dur: 0.05, vol: 0.08 }); },

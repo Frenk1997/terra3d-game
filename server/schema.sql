@@ -72,7 +72,10 @@ CREATE TABLE IF NOT EXISTS player_meta (
   alliance_id INTEGER,
   ally_taps   INTEGER NOT NULL DEFAULT 0,  -- тапы, принесённые нынешнему альянсу
   ally_at     INTEGER NOT NULL DEFAULT 0,  -- когда вступил
-  seen_at     INTEGER NOT NULL DEFAULT 0   -- последняя активность (для «в сети»)
+  seen_at     INTEGER NOT NULL DEFAULT 0,  -- последняя активность (для «в сети»)
+  ally_gems   INTEGER NOT NULL DEFAULT 0,  -- кристаллы, вложенные в нынешний альянс
+  admin       INTEGER NOT NULL DEFAULT 0,  -- 1 — администратор (чит-меню, модерация чата)
+  muted_until INTEGER NOT NULL DEFAULT 0   -- до какого времени игроку закрыт чат
 );
 CREATE INDEX IF NOT EXISTS idx_meta_alliance ON player_meta (alliance_id, ally_taps DESC);
 
@@ -92,7 +95,8 @@ CREATE TABLE IF NOT EXISTS alliances (
   leader     TEXT NOT NULL,
   open       INTEGER NOT NULL DEFAULT 1,   -- 1 — вступить может любой из списка
   taps       INTEGER NOT NULL DEFAULT 0,   -- все тапы альянса за всё время
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  gems       INTEGER NOT NULL DEFAULT 0    -- вложенные кристаллы (мощь = тапы + кристаллы × 500)
 );
 CREATE INDEX IF NOT EXISTS idx_alliances_taps ON alliances (taps DESC);
 
@@ -101,6 +105,7 @@ CREATE TABLE IF NOT EXISTS alliance_weekly (
   alliance_id INTEGER NOT NULL,
   taps        INTEGER NOT NULL DEFAULT 0,
   at          INTEGER NOT NULL DEFAULT 0,
+  gems        INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (week, alliance_id)
 );
 CREATE INDEX IF NOT EXISTS idx_alliance_weekly ON alliance_weekly (week, taps DESC);
@@ -120,3 +125,17 @@ CREATE TABLE IF NOT EXISTS link_codes (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS link_codes_sub ON link_codes (sub);
+
+-- ===== Чат =====
+-- channel: 'g' — общий, 'a:<id альянса>', 'd:<sub1>|<sub2>' — личные сообщения друзей. Хранится 30 дней.
+-- (В старых базах столбцы admin, muted_until, ally_gems, gems сервер добавляет сам при запуске — см. ensureSchema в worker.js.)
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel  TEXT NOT NULL,
+  sub      TEXT NOT NULL,
+  nickname TEXT NOT NULL,
+  text     TEXT NOT NULL,
+  at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_channel ON chat_messages (channel, id);
+CREATE INDEX IF NOT EXISTS idx_chat_sub ON chat_messages (sub, id);

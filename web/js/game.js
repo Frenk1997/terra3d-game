@@ -23,12 +23,19 @@ async function resolveApi() {
       const r = await fetch('/api/health', { cache: 'no-store', signal: ctrl.signal });
       clearTimeout(t);
       const d = await r.json();
-      if (d && d.terra) u = location.origin;
+      if (d && d.terra) { u = location.origin; LOGINS.yandex = !!d.yandex; }
     } catch (e) {}
+  } else if (u && !IS_TWITCH) {
+    // APK: узнаём, включён ли на сервере вход с Яндекс ID. Запуск не ждём — кнопка появится, когда сервер ответит.
+    fetch(u + '/api/health', { cache: 'no-store' }).then(r => r.json()).then(d => {
+      LOGINS.yandex = !!(d && d.yandex);
+      if ($('loginOverlay').classList.contains('open') && CONFIGURED) $('yandexBtn').hidden = !LOGINS.yandex;
+    }).catch(() => {});
   }
   CONFIG.API_URL = u;
   CONFIGURED = !!u;
 }
+const LOGINS = { yandex: false };
 
 const $ = (id) => document.getElementById(id);
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -55,7 +62,8 @@ function defaultPlanet(pid) {
 }
 // Статистика за всё время (не сбрасывается перерождением) — для квестов
 // friends и alliance — сколько было друзей и был ли альянс (для достижений; знает сервер)
-const STAT_KEYS = ['taps', 'built', 'asteroids', 'golden', 'evolves', 'perks', 'travels', 'playSec', 'chests', 'friends', 'alliance'];
+// combo — лучшая серия тапов, donated — сколько 💎 вложено в альянс
+const STAT_KEYS = ['taps', 'built', 'asteroids', 'golden', 'evolves', 'perks', 'travels', 'playSec', 'chests', 'friends', 'alliance', 'combo', 'donated'];
 function defaultStats() {
   const st = { maxEra: {} };
   STAT_KEYS.forEach(k => st[k] = 0);
@@ -71,13 +79,15 @@ function defaultState() {
   const ppr = {};
   PLANET_ORDER.forEach(pid => ppr[pid] = 0);
   return {
-    v: GAME_VERSION, planet: 'earth', unlocked: ['earth'], planets, gems: 0, sapphires: 0,
-    perks, ppk, ppr, rebirths: 0, boostUntil: 0, ownedCosmetics: [], look, stats: defaultStats(), quests: defaultQuests(), lastSave: Date.now()
+    v: GAME_VERSION, planet: 'earth', unlocked: ['earth'], unis: ['sol'], planets, gems: 0, sapphires: 0,
+    perks, ppk, ppr, rebirths: 0, boostUntil: 0, ownedCosmetics: [], look, stats: defaultStats(), quests: defaultQuests(),
+    tapSound: DEFAULT_TAP_SOUND, tut: 0, lastSave: Date.now()
   };
 }
 let state = defaultState();
 // tab — открытая панель снизу (null — панель закрыта, на экране только планета)
-const ui = { tab: null, shopTab: 'hat', mapSel: null, lbBoard: 'all', lbPeriod: 'all', buyMode: 1, socialTab: 'friends', allyPeriod: 'all' };
+const ui = { tab: null, shopTab: 'hat', mapSel: null, mapUni: 'sol', lbBoard: 'all', lbPeriod: 'all', lbUni: null, buyMode: 1, socialTab: 'friends', allyPeriod: 'all',
+  chatTab: 'global', chatWith: null, storeTab: 'chests' };
 try { const bm = localStorage.getItem('terra_buy_mode'); if (bm) ui.buyMode = bm === 'max' ? 'max' : (BUY_MODES.includes(+bm) ? +bm : 1); } catch (e) {}
 
 // Настройки на этом устройстве: вибрация, эффекты, запись чисел (звук и музыка — в Sound)
@@ -103,6 +113,7 @@ function migrateV2(p) {
   s.ownedCosmetics = Array.isArray(p.ownedCosmetics) ? p.ownedCosmetics : [];
   s.look.earth = { hat: p.equippedHat || null, bg: (p.equippedBg && p.equippedBg !== 'bg-default') ? p.equippedBg : null };
   s.lastSave = Number(p.lastSave) || Date.now();
+  s.tut = TUT_DONE;   // старый игрок — обучение не нужно
   return s;
 }
 
@@ -129,6 +140,11 @@ function applySave(p) {
       d.boostUntil = Math.min(Date.now() + 6 * 3600000, num(p.boostUntil));
       d.unlocked = Array.isArray(p.unlocked) ? PLANET_ORDER.filter(x => x === 'earth' || p.unlocked.includes(x)) : ['earth'];
       d.planet = d.unlocked.includes(p.planet) ? p.planet : 'earth';
+      // открытые измерения (v7); измерение открыто и тогда, когда открыта хоть одна его планета
+      const un = Array.isArray(p.unis) ? p.unis : [];
+      d.unis = UNIVERSE_ORDER.filter(u => u === 'sol' || un.includes(u) || d.unlocked.some(x => uniOf(x) === u));
+      d.tapSound = typeof p.tapSound === 'string' ? p.tapSound : DEFAULT_TAP_SOUND;
+      d.tut = Number.isInteger(p.tut) ? p.tut : TUT_DONE;   // старые сохранения — обучение уже не нужно
       d.ownedCosmetics = Array.isArray(p.ownedCosmetics) ? p.ownedCosmetics : [];
       d.lastSave = Number(p.lastSave) || Date.now();
       d.sapphires = int(p.sapphires);
@@ -148,6 +164,8 @@ function applySave(p) {
   // лучшие эпохи — не ниже текущих (для старых сохранений)
   PLANET_ORDER.forEach(pid => { if (s.unlocked.includes(pid)) s.stats.maxEra[pid] = Math.max(s.stats.maxEra[pid] || 0, s.planets[pid].era); });
   s.ownedCosmetics = s.ownedCosmetics.filter(id => COSMETICS.some(c => c.id === id));
+  if (s.tapSound !== DEFAULT_TAP_SOUND && !s.ownedCosmetics.includes(s.tapSound)) s.tapSound = DEFAULT_TAP_SOUND;
+  if (s.tut !== TUT_DONE && (s.stats.taps > 400 || totalPrestige(s) > 0)) s.tut = TUT_DONE;
   PLANET_ORDER.forEach(pid => {
     const l = s.look[pid];
     if (l.hat && !s.ownedCosmetics.includes(l.hat)) l.hat = null;
@@ -179,8 +197,23 @@ function planetMult(pid = cur()) { return 1 + prestigeCount(pid); }
 function boostLeft() { return Math.max(0, (state.boostUntil || 0) - Date.now()); }
 function boostMult() { return boostLeft() > 0 ? 2 : 1; }
 function speedMult() { return 1 + perk('time_warp') * 0.25; }
-function prodMult(pid) { return planetMult(pid) * speedMult() * boostMult() * (1 + planetPerkBonus(pid, 'prod')); }
-function clickGain(pid = cur()) { return Math.ceil(PL(pid).eras[ps(pid).era].click * planetMult(pid) * boostMult() * (1 + planetPerkBonus(pid, 'click'))); }
+// бонус открытых измерений (+25% за каждое после первого) и уровня альянса (+2% за уровень)
+function uniMult() { return 1 + UNIVERSE_BONUS * Math.max(0, (state.unis || ['sol']).length - 1); }
+let allyBonus = 0;
+try { allyBonus = Math.min(0.5, Math.max(0, parseFloat(localStorage.getItem('terra_ally_bonus')) || 0)); } catch (e) {}
+function setAllyBonus(level) {
+  const b = Math.min(ALLY_LEVEL_MAX, Math.max(0, level | 0)) * ALLY_LEVEL_BONUS;
+  if (b === allyBonus) return;
+  allyBonus = b;
+  try { localStorage.setItem('terra_ally_bonus', String(b)); } catch (e) {}
+}
+function prodMult(pid) { return planetMult(pid) * speedMult() * boostMult() * uniMult() * (1 + allyBonus) * (1 + planetPerkBonus(pid, 'prod')); }
+function clickGain(pid = cur()) { return Math.ceil(PL(pid).eras[ps(pid).era].click * planetMult(pid) * boostMult() * uniMult() * (1 + planetPerkBonus(pid, 'click'))); }
+// серия быстрых тапов (перк «Комбо-тапы»): до ×50, тап сильнее на 20% за уровень перка на полной серии
+const COMBO_MAX = 50, COMBO_GAP_MS = 650;
+const combo = { n: 0, at: 0 };
+function comboMult() { const l = perk('combo'); return l ? 1 + (Math.min(combo.n, COMBO_MAX) / COMBO_MAX) * 0.2 * l : 1; }
+function gemMult() { return 1 + perk('gem_res') * 0.2; }
 function costMult(pid) { return Math.max(0.3, (1 - perk('cheap_build') * 0.10) * (1 - planetPerkBonus(pid, 'cheap'))); }
 function rollCrit() { const l = perk('crit_solar'); return (l > 0 && Math.random() < 0.15) ? (2 + l) : 1; }
 
@@ -245,10 +278,15 @@ function rates(pid) {
 
 // Требования к экспедиции на планету
 function unlockInfo(pid) {
-  const U = PL(pid).unlock;
-  if (!U) return { reqs: [], cost: null, ready: true };
+  const U = PL(pid).unlock, uni = uniOf(pid);
+  if (!U) {
+    // первая планета измерения открывается проходом через чёрную дыру
+    if (uni !== 'sol' && !state.unis.includes(uni)) return { reqs: [{ label: `🕳️ Откройте ${UNIVERSES[uni].name} на карте`, ok: false }], cost: {}, ready: false };
+    return { reqs: [], cost: null, ready: true };
+  }
   const reqs = [];
-  reqs.push({ label: `🌍 Земля: эпоха ${U.earthEra + 1} «${PLANETS.earth.eras[U.earthEra].name}»`, ok: ps('earth').era >= U.earthEra });
+  if (uni !== 'sol') reqs.push({ label: `${UNIVERSES[uni].icon} ${UNIVERSES[uni].name} открыто`, ok: state.unis.includes(uni) });
+  if (U.earthEra !== undefined) reqs.push({ label: `🌍 Земля: эпоха ${U.earthEra + 1} «${PLANETS.earth.eras[U.earthEra].name}»`, ok: ps('earth').era >= U.earthEra });
   for (const p in (U.stages || {})) {
     reqs.push({ label: `${PL(p).icon} ${PL(p).name}: этап ${U.stages[p] + 1} «${PL(p).eras[U.stages[p]].name}»`, ok: isUnlocked(p) && ps(p).era >= U.stages[p] });
   }
@@ -268,9 +306,30 @@ function prestigeInfo(pid = cur()) {
     return { ...g, label: `Накопить ${fmt(g.need)} ${RES[g.res].icon} ${RES[g.res].name.toLowerCase()}`, have: v, goal: g.need, ok: v >= g.need };
   });
   const ready = isUnlocked(pid) && goals.every(g => g.ok);
-  return { pid, n, goals, ready, gems: prestigeGems(pid, n, st.era), mult: 1 + n, nextMult: 2 + n };
+  return { pid, n, goals, ready, gems: Math.round(prestigeGems(pid, n, st.era) * gemMult()), mult: 1 + n, nextMult: 2 + n };
 }
 function canPrestige(pid = cur()) { return prestigeInfo(pid).ready; }
+
+// ---------- Измерения ----------
+// «Пул» перехода: в предыдущем измерении все планеты пройдены до последнего этапа, набрано нужное число престижей
+// (всего и на каждой планете) — и плата кристаллами. После этого открывается чёрная дыра.
+const uniPrestige = (u) => UNIVERSES[u].planets.reduce((a, pid) => a + prestigeCount(pid), 0);
+const bestStage = (pid) => isUnlocked(pid) ? Math.max(state.stats.maxEra[pid] || 0, ps(pid).era) : -1;
+function universeInfo(u) {
+  const U = UNIVERSES[u], N = U.need;
+  if (!N) return { reqs: [], ready: true, open: true };
+  const F = UNIVERSES[N.from], reqs = [];
+  reqs.push({ label: `${F.icon} Открыто: ${F.name}`, ok: state.unis.includes(N.from) });
+  F.planets.forEach(pid => {
+    const max = PL(pid).eras.length - 1, b = bestStage(pid), pr = prestigeCount(pid);
+    reqs.push({ label: `${PL(pid).icon} ${PL(pid).name}: все этапы и ${N.each} ${plural(N.each, 'престиж', 'престижа', 'престижей')}`,
+      ok: b >= max && pr >= N.each, have: `${Math.max(0, b + 1)}/${max + 1} · 🌀${pr}` });
+  });
+  const tp = uniPrestige(N.from);
+  reqs.push({ label: `🌀 Престижей в измерении «${F.short}»: ${N.prestige}`, ok: tp >= N.prestige, have: `${tp}/${N.prestige}` });
+  reqs.push({ label: `💎 Плата чёрной дыре: ${N.gems}`, ok: state.gems >= N.gems, have: `${fmt(state.gems)}/${N.gems}` });
+  return { reqs, ready: reqs.every(r => r.ok), open: state.unis.includes(u), gems: N.gems };
+}
 
 // ============================================================
 //  ФОРМАТИРОВАНИЕ И МЕЛОЧИ
@@ -551,8 +610,11 @@ function b64url(bytes) {
   return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-async function startGoogleLogin() {
+function startGoogleLogin() { return startOAuthLogin('google'); }
+// Вход через Google или Яндекс ID — одинаковая схема: браузер → провайдер → наш сервер → одноразовый код → игра
+async function startOAuthLogin(provider) {
   if (!CONFIGURED) return;
+  const name = provider === 'yandex' ? 'Яндекс' : 'Google';
   showLoginError('');
   let url;
   try {
@@ -561,17 +623,17 @@ async function startGoogleLogin() {
     const st = b64url(crypto.getRandomValues(new Uint8Array(24)));
     const challenge = b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
     localStorage.setItem(PENDING_KEY, JSON.stringify({ state: st, verifier, t: Date.now() }));
-    url = `${CONFIG.API_URL}/auth/google/start?state=${st}&challenge=${challenge}&app=${IS_APP ? 1 : 0}${IS_APP ? '&build=' + MY_BUILD : ''}`;
+    url = `${CONFIG.API_URL}/auth/${provider}/start?state=${st}&challenge=${challenge}&app=${IS_APP ? 1 : 0}${IS_APP ? '&build=' + MY_BUILD : ''}`;
   } catch (e) {
     showLoginError('Этот браузер не поддерживает безопасный вход. Обновите его или откройте игру в Chrome.');
     return;
   }
   if (IS_APP) {
-    setLoginBusy(true, 'Продолжите вход в открывшемся окне Google…', true);
+    setLoginBusy(true, `Продолжите вход в открывшемся окне ${name}…`, true);
     try { window.TerraNative.openExternal(url); }
     catch (e) { setLoginBusy(false); showLoginError('Не удалось открыть браузер для входа.'); }
   } else {
-    setLoginBusy(true, 'Переходим в Google…');
+    setLoginBusy(true, `Переходим в ${name}…`);
     location.href = url;
   }
 }
@@ -587,11 +649,11 @@ async function completeLogin(code, st, error) {
   if (playing) return;
   const pending = takePendingLogin();
   if (error) {
-    showLogin(error === 'cancelled' ? 'Вход отменён.' : 'Google не подтвердил вход. Попробуйте ещё раз.');
+    showLogin(error === 'cancelled' ? 'Вход отменён.' : 'Вход не подтверждён. Попробуйте ещё раз.');
     return;
   }
   if (!code || !pending || pending.state !== st || Date.now() - pending.t > PENDING_TTL_MS) {
-    showLogin('Ссылка входа устарела. Нажмите «Войти через Google» ещё раз.');
+    showLogin('Ссылка входа устарела. Нажмите кнопку входа ещё раз.');
     return;
   }
   closeAllOverlays();
@@ -658,6 +720,7 @@ function showLogin(message) {
   showLoginError(message || '');
   $('demoBtn').hidden = false;
   $('googleBtn').hidden = !CONFIGURED || IS_TWITCH;
+  $('yandexBtn').hidden = !CONFIGURED || IS_TWITCH || !LOGINS.yandex;
   $('twitchBtn').hidden = !(IS_TWITCH && CONFIGURED);
   if (IS_TWITCH) {
     const viewer = /^U/.test(twitchUser) && !!twitchToken;
@@ -697,8 +760,7 @@ async function enterGame(profile, cloudSave, offlineMode) {
 function startPlaying(offline) {
   if (forcedUpdate) return;
   closeAllOverlays();
-  const sec = Math.min((Date.now() - (state.lastSave || Date.now())) / 1000, OFFLINE_MAX_SEC);
-  grantOffline(sec);
+  grantOffline((Date.now() - (state.lastSave || Date.now())) / 1000);
   bossCooldown = BOSS_FIRST_MIN + Math.random() * (BOSS_FIRST_MAX - BOSS_FIRST_MIN);
   endAsteroid(true);
   playing = true;
@@ -712,17 +774,22 @@ function startPlaying(offline) {
   else { setSync('sync'); queueSync(800); fetchLeaderboard(); }
   if (CONFIGURED && !demo && offline) queueSync(5000);
   checkUpdate();
+  if (canOnline()) setTimeout(() => { fetchSocial(); fetchChatSummary(); }, 1500);   // бонус альянса и непрочитанные сообщения
+  setTimeout(tutStart, 900);
 }
 
+// офлайн-доход: 50% дохода до 8 часов; «Капсула времени» добавляет +10% и +2 ч за уровень
 function grantOffline(sec) {
-  sec = Math.min(sec, OFFLINE_MAX_SEC);
+  const cap = perk('time_capsule');
+  sec = Math.min(sec, OFFLINE_MAX_SEC + cap * 7200);
   if (sec <= 60) return;
+  const eff = OFFLINE_EFFICIENCY + cap * 0.1;
   let shown = 0;
   state.unlocked.forEach(pid => {
     const r = rates(pid);
     for (const k in r) {
       if (r[k] <= 0) continue;
-      const add = r[k] * sec * OFFLINE_EFFICIENCY;
+      const add = r[k] * sec * eff;
       ps(pid).res[k] += add;
       if (pid === cur() && k === PL(pid).clickRes) shown = add;
     }
@@ -751,6 +818,7 @@ async function boot() {
     const me = await api('/api/me');
     session.nickname = me.profile ? me.profile.nickname : null;
     twitchLinked = !!me.twitch;
+    isAdmin = !!me.admin;
     saveSession();
     await enterGame(me.profile, me.save, false);
   } catch (e) {
@@ -784,7 +852,8 @@ async function logout({ ask = true, skipSync = false, keepCache = false, message
   clearSession();
   try { if (uid && !keepCache) localStorage.removeItem('terra_save_' + uid); } catch (e) {}
   try { localStorage.removeItem(PENDING_KEY); } catch (e) {}
-  session = null; myProfile = null; lbData = null; demo = false; needsReconcile = false; clientOutdated = false;
+  session = null; myProfile = null; lbData = null; demo = false; needsReconcile = false; clientOutdated = false; isAdmin = false;
+  chat.lists = {}; chat.summary = null; setAllyBonus(0);
   state = defaultState();
   endAsteroid(true);
   particles = []; ripples = []; debris = [];
@@ -899,6 +968,14 @@ async function submitCode() {
   $('codeSubmit').disabled = true; setCodeMsg('Проверяем…');
   try {
     const r = await api('/api/redeem', { method: 'POST', body: { code } });
+    if (r.admin) {   // секретный код администратора — включает чит-меню
+      isAdmin = true;
+      $('codeOverlay').classList.remove('open');
+      Sound.unlock(); vibrate([30, 40, 30]);
+      showToast('🛠️ Режим администратора включён: ⚙️ Настройки → Чит-меню', 4000);
+      openSettings(); openCheats();
+      return;
+    }
     const chips = applyReward(r.reward);
     $('codeOverlay').classList.remove('open');
     Sound.unlock(); vibrate([30, 40, 30]);
@@ -1069,7 +1146,12 @@ function myLocalEntry(board, period) {
     if (period === 'week') return null;   // недельный прирост знает только сервер
     return { score: progressOf(state), rebirths: totalPrestige(), era: ps('earth').era };
   }
-  if (!isUnlocked(board)) return null;
+  if (board.startsWith('u_')) {   // престижи измерения
+    const u = board.slice(2);
+    if (period === 'week' || !UNIVERSES[u] || !state.unis.includes(u)) return null;
+    return { score: uniPrestige(u), prestige: uniPrestige(u) };
+  }
+  if (!PLANETS[board] || !isUnlocked(board)) return null;
   const b = Math.min(planetBuildings(board), LB_STAGE - 1), pr = prestigeCount(board), era = ps(board).era;
   return { score: pr * LB_PRESTIGE + era * LB_STAGE + b, prestige: pr, era, buildings: b };
 }
@@ -1109,13 +1191,23 @@ function lbStat(p, board, period) {
   if (board === 'all') return period === 'week'
     ? `<span class="lb-pts">+${fmt(p.score)}</span><span>очков</span>`
     : `<span>🌀 ${fmt(p.rebirths)}</span><span>★ ${fmt(p.score)}</span>`;
+  if (board.startsWith('u_')) return `<span class="lb-pts">🌀 ${period === 'week' ? '+' : ''}${fmt(p.score)}</span><span>${plural(p.score, 'престиж', 'престижа', 'престижей')}</span>`;
   return `<span>🌀 ${fmt(p.prestige || 0)} · ${PL(board).stageWord} ${p.era + 1}</span><span>🏗 ${fmt(p.buildings)}</span>`;
 }
 
+// Доски топа: общий, три измерения (престижи и планеты каждого) и альянсы
+function lbBoardsHtml(board) {
+  const uni = board.startsWith('u_') ? board.slice(2) : PLANETS[board] ? uniOf(board) : null;
+  const top = [['all', '🏆 Общий'], ...UNIVERSE_ORDER.map(u => ['u_' + u, `${UNIVERSES[u].icon} ${UNIVERSES[u].short}`]), ['ally', '🛡️ Альянсы']];
+  let html = `<div class="lb-boards top">${top.map(([id, label]) => `<button class="lb-board ${id === board || (id === 'u_' + uni) ? 'active' : ''}" data-action="lbboard" data-id="${id}" type="button">${label}</button>`).join('')}</div>`;
+  if (uni) html += `<div class="lb-boards sub">${[['u_' + uni, '🌀 Престижи'], ...UNIVERSES[uni].planets.map(pid => [pid, `${PL(pid).icon} ${PL(pid).name}`])]
+    .map(([id, label]) => `<button class="lb-board ${id === board ? 'active' : ''}" data-action="lbboard" data-id="${id}" type="button">${label}</button>`).join('')}</div>`;
+  return html;
+}
 function renderAllyBoardHtml(period) {
   const L = allyList && allyList.period === period ? allyList : null;
-  let html = `<div class="lb-head"><div><div class="lb-title">🛡️ Топ альянсов <span class="lb-live ${allyLoading ? 'busy' : ''}">● live</span></div><div class="lb-sub">${L ? 'Альянсов: ' + fmt(L.total) + ' · ' : ''}Все тапы участников (без автокликера)</div></div><button class="btn-icon ${allyLoading ? 'spin' : ''}" data-action="lbrefresh" type="button">⟳</button></div>
-    <div class="lb-boards">${['all', ...PLANET_ORDER, 'ally'].map(b => `<button class="lb-board ${b === 'ally' ? 'active' : ''}" data-action="lbboard" data-id="${b}" type="button">${b === 'all' ? '🏆 Общий' : b === 'ally' ? '🛡️ Альянсы' : PL(b).icon + ' ' + PL(b).name}</button>`).join('')}</div>
+  let html = `<div class="lb-head"><div><div class="lb-title">🛡️ Топ альянсов <span class="lb-live ${allyLoading ? 'busy' : ''}">● live</span></div><div class="lb-sub">${L ? 'Альянсов: ' + fmt(L.total) + ' · ' : ''}Мощь = ручные тапы + вложенные 💎 (1 💎 = ${fmt(ALLY_GEM_POWER)} мощи)</div></div><button class="btn-icon ${allyLoading ? 'spin' : ''}" data-action="lbrefresh" type="button">⟳</button></div>
+    ${lbBoardsHtml('ally')}
     <div class="seg lb-period">
       <button class="seg-btn ${period === 'week' ? 'active' : ''}" data-action="lbperiod" data-id="week" type="button">📅 За неделю</button>
       <button class="seg-btn ${period === 'all' ? 'active' : ''}" data-action="lbperiod" data-id="all" type="button">♾️ За всё время</button>
@@ -1123,7 +1215,7 @@ function renderAllyBoardHtml(period) {
   if (period === 'week' && L && L.week) html += `<div class="lb-week">⏳ Неделя закончится через ${fmtLeft(L.week.endsAt - Date.now())}</div>`;
   if (!L) html += allyErr ? `<div class="empty"><div class="empty-ico">📡</div><div class="empty-title">Не удалось загрузить</div></div>` : '<div class="skeleton"></div>'.repeat(5);
   else if (!L.alliances.length) html += `<div class="empty"><div class="empty-ico">🛡️</div><div class="empty-title">Пока пусто</div><div class="empty-text">${period === 'week' ? 'На этой неделе альянсы ещё не тапали.' : 'Альянсов пока нет — основатель должен пройти все пять планет.'}</div></div>`;
-  else html += L.alliances.map((a, i) => allyRow(a, i, false)).join('');
+  else html += allyPodium(L.alliances) + L.alliances.map((a, i) => allyRow(a, i, false)).join('');
   return html;
 }
 function renderLeaderboardHtml() {
@@ -1134,12 +1226,14 @@ function renderLeaderboardHtml() {
   if (board === 'ally') return renderAllyBoardHtml(period);
   const raw = lbData && lbData.board === board && lbData.period === period ? lbData : null;
   const d = raw ? { ...raw, ...mergedLeaderboard(raw, board, period) } : null;
-  const boardName = board === 'all' ? 'Общий топ' : `Топ: ${PL(board).name}`;
+  const ub = board.startsWith('u_') ? UNIVERSES[board.slice(2)] : null;
+  const boardName = board === 'all' ? 'Общий топ' : ub ? `Престижи: ${ub.short}` : `Топ: ${PL(board).name}`;
   const note = board === 'all'
     ? (period === 'week' ? 'Очки, набранные с понедельника' : 'Престиж — 100 очков, эпоха или этап — 1')
+    : ub ? (period === 'week' ? 'Престижи, сделанные с понедельника' : `Сумма престижей всех планет: ${ub.name}`)
     : (period === 'week' ? 'Лучший результат на этой неделе' : 'Престижи планеты, затем этап и постройки');
   let html = `<div class="lb-head"><div><div class="lb-title">🏆 ${boardName} <span class="lb-live ${lbFetching ? 'busy' : ''}" title="Топ обновляется сам">● live</span></div><div class="lb-sub">${d ? 'Игроков: ' + fmt(d.total) + ' · ' : ''}${note}</div></div><button class="btn-icon ${lbFetching ? 'spin' : ''}" data-action="lbrefresh" type="button">⟳</button></div>
-    <div class="lb-boards">${['all', ...PLANET_ORDER, 'ally'].map(b => `<button class="lb-board ${b === board ? 'active' : ''}" data-action="lbboard" data-id="${b}" type="button">${b === 'all' ? '🏆 Общий' : b === 'ally' ? '🛡️ Альянсы' : PL(b).icon + ' ' + PL(b).name}</button>`).join('')}</div>
+    ${lbBoardsHtml(board)}
     <div class="seg lb-period">
       <button class="seg-btn ${period === 'week' ? 'active' : ''}" data-action="lbperiod" data-id="week" type="button">📅 За неделю</button>
       <button class="seg-btn ${period === 'all' ? 'active' : ''}" data-action="lbperiod" data-id="all" type="button">♾️ За всё время</button>
@@ -1156,6 +1250,7 @@ function renderLeaderboardHtml() {
       const m = d && d.me;
       if (m && m.rank) rank = '#' + m.rank;
       if (board === 'all') stat = m ? `+${fmt(m.score)} очков за неделю` : 'На этой неделе пока без очков';
+      else if (ub) stat = !state.unis.includes(board.slice(2)) ? '🔒 Измерение ещё не открыто' : m ? `🌀 ${period === 'week' ? '+' : ''}${fmt(m.score)} ${plural(m.score, 'престиж', 'престижа', 'престижей')}` : 'Пока без престижей';
       else if (!isUnlocked(board)) stat = `🔒 Планета ещё не открыта`;
       else stat = m ? `🌀 ${fmt(m.prestige || 0)} · ${PL(board).stageWord} ${m.era + 1} · 🏗 ${fmt(m.buildings)}` : 'Пока без результата';
     }
@@ -1212,6 +1307,8 @@ async function fetchSocial() {
     const f = social.friends.length;
     if (f > (state.stats.friends || 0)) state.stats.friends = f;
     if (social.alliance && !state.stats.alliance) state.stats.alliance = 1;
+    setAllyBonus(social.alliance ? social.alliance.level : 0);
+    if (social.admin) isAdmin = true;
   } catch (e) { socialErr = true; }
   socialLoading = false; socialVer++;
   if (ui.tab === 'social') { renderPanel(); if (ui.socialTab === 'ally' && social && !social.alliance && !allyList) fetchAlliances(); }
@@ -1308,33 +1405,26 @@ function renderSocialHtml() {
   // ---- альянс ----
   const A = social.alliance;
   if (A) {
-    html += `<div class="ally-hero" data-ally="${A.id}" style="--i:1">
-        <div class="ally-emblem">${A.emblem}</div><div class="ally-name">${esc(A.name)}</div>
-        <div class="pf-status">${A.open ? '🔓 открытый' : '🔒 только по коду'} · лидер ${esc(A.leader || '—')}</div>
-        <div class="ally-stats">
-          <div class="stat-box"><div class="stat-val">#${A.rank}</div><div class="stat-lbl">в топе</div></div>
-          <div class="stat-box"><div class="stat-val">${fmt(A.taps)}</div><div class="stat-lbl">тапов всего</div></div>
-          <div class="stat-box"><div class="stat-val">${A.size}/${A.max}</div><div class="stat-lbl">участников</div></div>
-        </div>
-      </div>
+    html += allyHeroHtml(A, 1) + `
       <div class="code-card" style="--i:2"><div class="cc-info"><div class="cc-lbl">Код приглашения</div><div class="cc-code">${esc(A.code || '')}</div></div>
         <button class="btn-small soft" data-action="copycode" data-id="${esc(A.code || '')}" type="button">📋</button></div>
-      <div class="section-header" style="--i:3"><span>👆 Топ альянса по тапам</span><span>за неделю: ${fmt(A.weekTaps)}</span></div>
-      ${A.members.map((m, i) => personRow(m, i + 4, { rank: i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1, sub: `★ ${fmt(m.score)}`, val: `👆 ${fmt(m.taps)}` })).join('')}
+      <div class="section-header" style="--i:3"><span>⚡ Вклад участников</span><span>за неделю: ⚡${fmt(A.weekPower || 0)}</span></div>
+      ${A.members.map((m, i) => personRow(m, i + 4, { rank: i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1, sub: `👆 ${fmt(m.taps)}${m.gems ? ' · 💎 ' + fmt(m.gems) : ''}`, val: `⚡ ${fmt(m.power || 0)}` })).join('')}
       <div class="sheet-actions" style="--i:6;margin-top:4px">
         <button class="btn-soft" data-action="alliance" data-id="${A.id}" type="button">${A.isLeader ? '⚙️ Управление' : '🛡️ Подробнее'}</button>
+        <button class="btn-soft" data-action="chatally" type="button">💬 Чат альянса</button>
       </div>`;
     return html;
   }
   html += `<div class="add-row" style="--i:1"><input id="allyCodeInput" type="text" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Код альянса"><button class="btn-small" data-action="allyjoincode" type="button">Вступить</button></div>
     ${msg}`;
   // сервер проверит ещё раз по облачному сохранению; локально — чтобы кнопка появилась сразу
-  if (social.canCreate || planetsMaxedCount() === PLANET_ORDER.length) {
+  if (social.canCreate || planetsMaxedCount('sol') === UNIVERSES.sol.planets.length) {
     html += `<div class="ally-lock" style="--i:2;border-style:solid;border-color:rgba(250,204,21,0.6)"><div class="al-title">👑 Вы прошли всю Солнечную систему!</div><div class="al-text">Теперь можно основать свой альянс: игроки вступают по коду или из списка, а альянсы соревнуются по тапам.</div><button class="btn-main" data-action="allycreate" type="button">🛡️ Создать альянс</button></div>`;
   } else {
     const pr = social.planets || {};
     html += `<div class="ally-lock" style="--i:2"><div class="al-title">🔒 Свой альянс</div><div class="al-text">Создать альянс может тот, кто прошёл все этапы на всех пяти планетах. Вступить в чужой можно уже сейчас.</div>
-      <div class="pf-planets">${PLANET_ORDER.map(pid => { const x = pr[pid] || { best: 0, max: PL(pid).eras.length - 1, open: false }; const done = x.open && x.best >= x.max;
+      <div class="pf-planets">${UNIVERSES.sol.planets.map(pid => { const x = pr[pid] || { best: 0, max: PL(pid).eras.length - 1, open: false }; const done = x.open && x.best >= x.max;
         return `<div class="pf-pl ${x.open ? '' : 'locked'} ${done ? 'max' : ''}"><span class="pl-ico">${PL(pid).icon}</span><span class="pl-n">${PL(pid).name}</span><span class="pl-bar"><i style="width:${x.open ? Math.round((x.best + 1) / (x.max + 1) * 100) : 0}%"></i></span><span class="pl-v">${done ? '✅' : x.open ? `${x.best + 1}/${x.max + 1}` : '🔒'}</span></div>`; }).join('')}</div></div>`;
   }
   html += `<div class="section-header" style="--i:3"><span>🏆 Альянсы</span><span>${allyList ? 'всего ' + fmt(allyList.total) : ''}</span></div>`;
@@ -1344,23 +1434,49 @@ function renderSocialHtml() {
   return html;
 }
 // сколько планет пройдено до последнего этапа (для альянса и достижения)
-function planetsMaxedCount() { return PLANET_ORDER.filter(pid => isUnlocked(pid) && Math.max(state.stats.maxEra[pid] || 0, ps(pid).era) >= PL(pid).eras.length - 1).length; }
+function planetsMaxedCount(u = 'sol') { return UNIVERSES[u].planets.filter(pid => isUnlocked(pid) && Math.max(state.stats.maxEra[pid] || 0, ps(pid).era) >= PL(pid).eras.length - 1).length; }
+// Карточка своего альянса: уровень, мощь, бонус, кнопка вклада кристаллов
+function allyHeroHtml(A, i) {
+  const lvl = A.level || 0, next = allyLevelAt(lvl + 1), prev = allyLevelAt(lvl);
+  const pct = lvl >= ALLY_LEVEL_MAX ? 100 : Math.max(0, Math.min(100, (A.power - prev) / (next - prev) * 100));
+  return `<div class="ally-hero" data-ally="${A.id}" style="--i:${i}">
+      <div class="ally-emblem">${A.emblem}<span class="ally-lvl">${lvl}</span></div><div class="ally-name">${esc(A.name)}</div>
+      <div class="pf-status">${A.open ? '🔓 открытый' : '🔒 только по коду'} · лидер ${esc(A.leader || '—')}</div>
+      <div class="ally-stats">
+        <div class="stat-box"><div class="stat-val">#${A.rank}</div><div class="stat-lbl">в топе</div></div>
+        <div class="stat-box"><div class="stat-val">⚡${fmt(A.power || 0)}</div><div class="stat-lbl">мощь</div></div>
+        <div class="stat-box"><div class="stat-val">${A.size}/${A.max}</div><div class="stat-lbl">участников</div></div>
+      </div>
+      <div class="ally-level"><div class="al-row"><span>Уровень ${lvl}${lvl >= ALLY_LEVEL_MAX ? ' · максимум' : ''}</span><span>+${Math.round(lvl * ALLY_LEVEL_BONUS * 100)}% к доходу всех участников</span></div>
+        <div class="al-bar"><i style="width:${pct.toFixed(1)}%"></i></div>
+        <div class="al-row dim"><span>👆 ${fmt(A.taps)} · 💎 ${fmt(A.gems || 0)} вложено</span><span>${lvl >= ALLY_LEVEL_MAX ? '' : `до ур. ${lvl + 1}: ⚡${fmt(Math.max(0, next - A.power))}`}</span></div></div>
+      ${A.isMember ? `<button class="btn-main donate-btn" data-action="allydonate" type="button">💎 Вложить кристаллы в альянс</button>` : ''}
+    </div>`;
+}
 function allyRow(a, i, joinBtn) {
   const rank = i + 1, medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank;
   const mine = social && social.alliance && social.alliance.id === a.id || (allyList && allyList.mine === a.id);
-  return `<div class="ally-row ${mine ? 'mine' : ''}" data-ally="${a.id}" style="--i:${Math.min(i + 4, 14)}">
-    <div class="lb-rank">${medal}</div><div class="a-emb">${a.emblem}</div>
-    <div class="p-info"><div class="p-name">${esc(a.name)}</div><div class="p-sub">👥 ${a.members}/${allyList ? allyList.max : 30} · ${a.open ? '🔓 открыт' : '🔒 по коду'}</div></div>
+  return `<div class="ally-row ${mine ? 'mine' : ''} ${rank <= 3 ? 'top' + rank : ''}" data-ally="${a.id}" style="--i:${Math.min(i + 4, 14)}">
+    <div class="lb-rank">${medal}</div><div class="a-emb">${a.emblem}<span class="ally-lvl sm">${a.level || 0}</span></div>
+    <div class="p-info"><div class="p-name">${esc(a.name)}</div><div class="p-sub">👥 ${a.members}/${allyList ? allyList.max : 30} · ${a.open ? '🔓 открыт' : '🔒 по коду'}${a.gems ? ' · 💎 ' + fmt(a.gems) : ''}</div></div>
     ${joinBtn && a.open && !(social && social.alliance) && a.members < (allyList ? allyList.max : 30)
       ? `<button class="btn-small" data-action="allyjoin" data-id="${a.id}" type="button">Вступить</button>`
-      : `<div class="p-val">👆 ${fmt(a.taps)}</div>`}
+      : `<div class="p-val">⚡ ${fmt(a.power || 0)}</div>`}
   </div>`;
+}
+// Пьедестал тройки лидеров в топе альянсов
+function allyPodium(list) {
+  if (list.length < 2) return '';
+  const top = [list[1], list[0], list[2]].map((a, k) => a ? { a, place: [2, 1, 3][k] } : null);
+  return `<div class="podium">${top.map(x => x ? `<div class="pod p${x.place}" data-ally="${x.a.id}"><div class="pod-emb">${x.a.emblem}</div>
+    <div class="pod-name">${esc(x.a.name)}</div><div class="pod-pow">⚡${fmt(x.a.power || 0)}</div><div class="pod-step">${x.place}</div></div>` : '<div class="pod empty"></div>').join('')}</div>`;
 }
 
 async function joinAlliance(body) {
   try {
     const r = await api('/api/alliance/join', { method: 'POST', body });
     if (social) social.alliance = r.alliance;
+    setAllyBonus(r.alliance.level);
     state.stats.alliance = 1;
     Sound.unlock(); vibrate(30);
     setSocialMsg('');
@@ -1400,12 +1516,13 @@ function renderAllianceSheet(A) {
   sheet.innerHTML = `
     <div class="pf-cover"><button class="btn-icon" id="allyClose" type="button">✕</button>
       <div class="ally-emblem">${A.emblem}</div><div class="pf-name">${esc(A.name)}</div>
-      <div class="pf-status">#${A.rank} в топе альянсов · ${A.open ? '🔓 открытый' : '🔒 только по коду'}</div>
+      <div class="pf-status">#${A.rank} в топе альянсов · уровень ${A.level || 0} · ${A.open ? '🔓 открытый' : '🔒 только по коду'}</div>
       <div class="ally-stats">
-        <div class="stat-box"><div class="stat-val">${fmt(A.taps)}</div><div class="stat-lbl">тапов всего</div></div>
-        <div class="stat-box"><div class="stat-val">${fmt(A.weekTaps)}</div><div class="stat-lbl">за неделю</div></div>
+        <div class="stat-box"><div class="stat-val">⚡${fmt(A.power || 0)}</div><div class="stat-lbl">мощь</div></div>
+        <div class="stat-box"><div class="stat-val">⚡${fmt(A.weekPower || 0)}</div><div class="stat-lbl">за неделю</div></div>
         <div class="stat-box"><div class="stat-val">${A.size}/${A.max}</div><div class="stat-lbl">участников</div></div>
       </div>
+      <div class="pf-status">👆 ${fmt(A.taps)} тапов · 💎 ${fmt(A.gems || 0)} вложено · +${Math.round((A.level || 0) * ALLY_LEVEL_BONUS * 100)}% к доходу</div>
     </div>
     <div class="pf-body">
       ${A.isMember && A.code ? `<div class="code-card"><div class="cc-info"><div class="cc-lbl">Код приглашения</div><div class="cc-code">${esc(A.code)}</div></div><button class="btn-small soft" id="allyCopy" type="button">📋</button></div>` : ''}
@@ -1415,12 +1532,13 @@ function renderAllianceSheet(A) {
           <div class="set-row"><span class="s-ico">🔑</span><span class="s-lbl">Новый код приглашения<small>Старый перестанет работать</small></span><button class="btn-small soft" id="allyNewCode" type="button">Сменить</button></div>
         </div>
         <div class="emblem-pick" id="allyEmblems">${(social && social.emblems || []).map(e => `<button type="button" class="${e === A.emblem ? 'sel' : ''}" data-emb="${e}">${e}</button>`).join('')}</div>` : ''}
-      <div class="pf-sec">👆 Участники по тапам</div>
+      ${A.isMember ? `<button class="btn-main" id="allyDonate" type="button">💎 Вложить кристаллы</button>` : ''}
+      <div class="pf-sec">⚡ Участники по вкладу</div>
       <div class="pf-planets">${A.members.map((m, i) => `<div class="person" data-nick="${esc(m.nickname)}">
         <div class="p-rank">${i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1}</div>
         <div class="av-wrap"><div class="avatar sm" style="${avatarStyle(m.nickname)}">${esc(initialOf(m.nickname))}</div><i class="online-dot ${m.online ? 'on' : ''}"></i></div>
-        <div class="p-info"><div class="p-name">${esc(m.nickname)}${m.leader ? '<span class="lead-badge">👑 лидер</span>' : ''}${m.me ? '<span class="you">вы</span>' : ''}</div><div class="p-sub">★ ${fmt(m.score)}</div></div>
-        <div class="p-val">👆 ${fmt(m.taps)}</div>
+        <div class="p-info"><div class="p-name">${esc(m.nickname)}${m.leader ? '<span class="lead-badge">👑 лидер</span>' : ''}${m.me ? '<span class="you">вы</span>' : ''}</div><div class="p-sub">👆 ${fmt(m.taps)}${m.gems ? ' · 💎 ' + fmt(m.gems) : ''}</div></div>
+        <div class="p-val">⚡ ${fmt(m.power || 0)}</div>
         ${A.isLeader && !m.me ? `<button class="btn-small danger" data-kick="${esc(m.nickname)}" type="button">✕</button>` : ''}
       </div>`).join('')}</div>
       <div class="sheet-stack">
@@ -1431,6 +1549,7 @@ function renderAllianceSheet(A) {
   $('allyClose').onclick = () => $('allyOverlay').classList.remove('open');
   if ($('allyCopy')) $('allyCopy').onclick = () => copyText(A.code, 'Код приглашения скопирован');
   if ($('allyJoin')) $('allyJoin').onclick = () => joinAlliance({ id: A.id });
+  if ($('allyDonate')) $('allyDonate').onclick = () => openDonate();
   if ($('allyLeave')) $('allyLeave').onclick = () => leaveAlliance(A);
   const settings = async (body) => {
     try { const r = await api('/api/alliance/settings', { method: 'POST', body }); if (social) social.alliance = r.alliance; socialVer++; renderAllianceSheet(r.alliance); Sound.ui(); if (body.newCode) showToast('Новый код: ' + r.alliance.code); }
@@ -1455,11 +1574,64 @@ async function leaveAlliance(A) {
   try {
     await api('/api/alliance/leave', { method: 'POST' });
     if (social) social.alliance = null;
+    setAllyBonus(0);
     allyList = null; socialVer++;
     $('allyOverlay').classList.remove('open');
     showToast('Вы вышли из альянса');
     if (ui.tab === 'social') { renderPanel(); fetchAlliances(); }
   } catch (e) { showToast(errText(ALLY_ERR, e)); }
+}
+// Вклад кристаллов в альянс: навсегда превращаются в мощь (1 💎 = ALLY_GEM_POWER) — альянс растёт в топе и в уровне
+function openDonate() {
+  const A = social && social.alliance;
+  if (!A || !canSync()) { showToast(canSync() ? 'Вы не в альянсе' : 'Нужен интернет', 2500); return; }
+  const sheet = $('allySheet');
+  let amount = Math.min(state.gems, 10);
+  const presets = [10, 50, 100, 500].filter(v => v <= Math.max(10, state.gems));
+  const draw = () => {
+    sheet.innerHTML = `
+      <div class="pf-cover"><button class="btn-icon" id="allyClose" type="button">✕</button>
+        <div class="ally-emblem">${A.emblem}<span class="ally-lvl">${A.level || 0}</span></div><div class="pf-name">Вклад в «${esc(A.name)}»</div>
+        <div class="pf-status">У вас 💎 ${fmt(state.gems)}</div></div>
+      <div class="pf-body">
+        <div class="set-text">Кристаллы превращаются в мощь альянса: <b>1 💎 = ⚡${fmt(ALLY_GEM_POWER)}</b>. Мощь поднимает альянс в топе и даёт уровни — каждый уровень +${Math.round(ALLY_LEVEL_BONUS * 100)}% к доходу <b>всем</b> участникам.</div>
+        <div class="donate-pick">${presets.map(v => `<button type="button" class="${v === amount ? 'sel' : ''}" data-amt="${v}">${v}</button>`).join('')}<button type="button" class="${amount === Math.floor(state.gems) && amount > 0 ? 'sel' : ''}" data-amt="all">Все</button></div>
+        <div class="add-row"><input id="donAmt" type="number" min="1" step="1" inputmode="numeric" value="${amount}"><button class="btn-small" id="donGo" type="button">Вложить</button></div>
+        <div class="nick-msg" id="donMsg">+⚡${fmt(amount * ALLY_GEM_POWER)} мощи</div>
+        <div class="set-text dim">⚠️ Вклад не возвращается — даже если вы выйдете из альянса.</div>
+      </div>`;
+    $('allyClose').onclick = () => $('allyOverlay').classList.remove('open');
+    sheet.querySelectorAll('[data-amt]').forEach(b => b.onclick = () => { amount = b.dataset.amt === 'all' ? Math.floor(state.gems) : +b.dataset.amt; Sound.ui(); draw(); });
+    $('donAmt').oninput = () => { amount = Math.max(0, Math.floor(+$('donAmt').value || 0)); $('donMsg').textContent = `+⚡${fmt(amount * ALLY_GEM_POWER)} мощи`; $('donMsg').className = 'nick-msg'; };
+    $('donGo').onclick = go;
+  };
+  const go = async () => {
+    const msg = (t, bad) => { $('donMsg').textContent = t; $('donMsg').className = 'nick-msg' + (bad ? ' err' : ''); };
+    if (!(amount >= 1)) { msg('Введите, сколько вложить', true); Sound.error(); return; }
+    if (amount > state.gems) { msg('Столько кристаллов нет', true); Sound.error(); return; }
+    const ok = await askConfirm({ title: `Вложить ${fmt(amount)} 💎?`, text: `Альянс «${A.name}» получит ⚡${fmt(amount * ALLY_GEM_POWER)} мощи. Кристаллы не вернутся.`, ok: 'Вложить' });
+    if (!ok) return;
+    $('donGo').disabled = true; msg('Вкладываем…');
+    try {
+      for (let i = 0; i < 40 && syncing; i++) await new Promise(r => setTimeout(r, 150));
+      await syncNow();   // сервер списывает кристаллы из облачного сохранения — сначала отправим свежее
+      const r = await api('/api/alliance/donate', { method: 'POST', body: { amount } });
+      state.gems = Math.max(0, state.gems - r.amount);
+      stat('donated', r.amount);
+      if (social) social.alliance = r.alliance;
+      setAllyBonus(r.alliance.level); socialVer++;
+      Sound.evolve(); vibrate([30, 40, 30]);
+      saveLocal(); queueSync(800);
+      showToast(`💎 Вложено ${fmt(r.amount)} — альянс получил ⚡${fmt(r.amount * ALLY_GEM_POWER)}!${r.levelUp ? ' Новый уровень альянса!' : ''}`, 4000);
+      renderAll();
+      renderAllianceSheet(r.alliance);
+    } catch (e) {
+      $('donGo').disabled = false; Sound.error();
+      msg(e.message === 'not_enough_gems' ? 'Сервер видит меньше кристаллов — подождите пару секунд и попробуйте снова' : errText(ALLY_ERR, e), true);
+    }
+  };
+  draw();
+  $('allyOverlay').classList.add('open'); Sound.ui();
 }
 function openAllianceCreate() {
   const emblems = (social && social.emblems) || ['🛡️'];
@@ -1509,13 +1681,15 @@ function profileStatsHtml(st, extra) {
   </div>`;
 }
 function profilePlanetsHtml(pl) {
-  return `<div class="pf-planets">${PLANET_ORDER.map(pid => {
+  // измерения, где у игрока нет ни одной открытой планеты, не показываем (кроме Солнечной)
+  return UNIVERSE_ORDER.filter(u => u === 'sol' || UNIVERSES[u].planets.some(pid => pl[pid] && pl[pid].open))
+    .map(u => `${u === 'sol' ? '' : `<div class="pf-uni">${UNIVERSES[u].icon} ${UNIVERSES[u].name}</div>`}<div class="pf-planets">${UNIVERSES[u].planets.map(pid => {
     const x = pl[pid] || { open: false, stage: 0, best: 0, prestige: 0 };
     const max = PL(pid).eras.length - 1, done = x.open && x.best >= max;
     return `<div class="pf-pl ${x.open ? '' : 'locked'} ${done ? 'max' : ''}"><span class="pl-ico">${PL(pid).icon}</span><span class="pl-n">${PL(pid).name}</span>
       <span class="pl-bar"><i style="width:${x.open ? Math.round((x.stage + 1) / (max + 1) * 100) : 0}%"></i></span>
       <span class="pl-v">${x.open ? `${PL(pid).stageWord === 'Эпоха' ? 'эп.' : 'эт.'} ${x.stage + 1}${x.prestige ? ' · 🌀' + fmt(x.prestige) : ''}` : '🔒'}</span></div>`;
-  }).join('')}</div>`;
+  }).join('')}</div>`).join('');
 }
 function localPlanets() {
   const out = {};
@@ -1594,6 +1768,352 @@ async function openPlayer(nick) {
 }
 
 // ============================================================
+//  ЧАТ: общий, альянса и личные сообщения друзьям
+// ============================================================
+// Сообщения хранит сервер; пока вкладка чата открыта, игра спрашивает новые каждые 3 секунды,
+// а раз в 25 секунд — сводку (есть ли непрочитанное), чтобы показать точку на кнопке «Чат».
+const CHAT_MAX = 200;
+const chat = { lists: {}, loading: false, err: false, summary: null, sendAt: 0, muted: 0 };
+let chatShellVer = 0;
+const chatKey = () => ui.chatTab === 'dm' ? 'dm:' + (ui.chatWith || '').toLowerCase() : ui.chatTab;
+function chatRead() { try { return JSON.parse(localStorage.getItem('terra_chat_read_' + currentUid())) || {}; } catch (e) { return {}; } }
+function markChatRead(key, id) {
+  if (!id) return;
+  const r = chatRead();
+  if ((r[key] || 0) >= id) return;
+  r[key] = id;
+  try { localStorage.setItem('terra_chat_read_' + currentUid(), JSON.stringify(r)); } catch (e) {}
+  updateChatBadge();
+}
+// непрочитанное: альянс и личные (общий чат — без точки, он слишком живой)
+function chatUnread() {
+  const S = chat.summary, r = chatRead();
+  if (!S) return { ally: 0, dm: {}, dmTotal: 0, global: false };
+  const dm = {};
+  let dmTotal = 0;
+  (S.dms || []).forEach(d => { if (d.lastId > (r['dm:' + d.nickname.toLowerCase()] || 0) && !d.lastMine) { dm[d.nickname.toLowerCase()] = 1; dmTotal++; } });
+  return { ally: S.ally && S.ally > (r.ally || 0) && !S.allyMine ? 1 : 0, dm, dmTotal, global: S.global > (r.global || 0) };
+}
+function updateChatBadge() {
+  const u = chatUnread(), n = u.ally + u.dmTotal;
+  const b = $('dotChat');
+  if (b) { b.hidden = n === 0; b.textContent = n > 9 ? '9+' : n || ''; }
+}
+async function fetchChatSummary() {
+  if (!canOnline() || clientOutdated) return;
+  try { chat.summary = await api('/api/chat/summary'); updateChatBadge(); if (ui.tab === 'chat' && ui.chatTab === 'dm' && !ui.chatWith) renderChatBody(); } catch (e) {}
+}
+setInterval(() => { if (playing && !document.hidden && ui.tab !== 'chat') fetchChatSummary(); }, 25000);
+async function fetchChat(full) {
+  if (!canOnline() || chat.loading) return;
+  if (ui.chatTab === 'dm' && !ui.chatWith) { fetchChatSummary(); return; }
+  if (ui.chatTab === 'ally' && social && !social.alliance) return;
+  const key = chatKey(), L = chat.lists[key] || (chat.lists[key] = { msgs: [], last: 0, loaded: false });
+  chat.loading = true;
+  try {
+    const q = `ch=${ui.chatTab}${ui.chatWith ? '&with=' + encodeURIComponent(ui.chatWith) : ''}${!full && L.loaded ? '&after=' + L.last : ''}`;
+    const r = await api('/api/chat?' + q);
+    if (key === chatKey()) {
+      const known = new Set(L.msgs.map(m => m.id));
+      const add = (r.messages || []).filter(m => !known.has(m.id));
+      if (full || !L.loaded) L.msgs = r.messages || []; else L.msgs = L.msgs.concat(add);
+      if (L.msgs.length > CHAT_MAX) L.msgs = L.msgs.slice(-CHAT_MAX);
+      L.last = L.msgs.length ? L.msgs[L.msgs.length - 1].id : L.last;
+      L.loaded = true; chat.err = false; chat.muted = r.mutedUntil || 0; chat.noAlly = !!r.noAlly;
+      if (add.length || full || !L.rendered) renderChatList();
+      if (ui.tab === 'chat' && !document.hidden) markChatRead(key, L.last);
+    }
+  } catch (e) {
+    chat.err = e.status === 403 ? (e.message || 'forbidden') : true;
+    if (key === chatKey()) renderChatList();
+  }
+  chat.loading = false;
+}
+setInterval(() => { if (playing && ui.tab === 'chat' && !document.hidden) fetchChat(false); }, 3000);
+
+function chatTime(t) { const d = new Date(t), n = new Date(); const hm = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); return d.toDateString() === n.toDateString() ? hm : d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) + ' ' + hm; }
+function renderChatShell(container) {
+  const u = chatUnread();
+  if (!canOnline()) {
+    container.innerHTML = `<div class="empty"><div class="empty-ico">💬</div><div class="empty-title">Чат</div><div class="empty-text">Войдите в аккаунт, чтобы общаться с игроками, альянсом и друзьями.</div></div>`;
+    return;
+  }
+  const tab = ui.chatTab;
+  container.innerHTML = `<div class="chat-wrap">
+    <div class="seg seg3x chat-tabs">
+      <button class="seg-btn ${tab === 'global' ? 'active' : ''}" data-action="chattab" data-id="global" type="button">🌍 Общий</button>
+      <button class="seg-btn ${tab === 'ally' ? 'active' : ''}" data-action="chattab" data-id="ally" type="button">🛡️ Альянс${u.ally ? ' <i class="cb">•</i>' : ''}</button>
+      <button class="seg-btn ${tab === 'dm' ? 'active' : ''}" data-action="chattab" data-id="dm" type="button">✉️ Личные${u.dmTotal ? ` <i class="cb">${u.dmTotal}</i>` : ''}</button>
+    </div>
+    <div class="chat-body" id="chatBody"></div>
+  </div>`;
+  renderChatBody();
+}
+function renderChatBody() {
+  const body = $('chatBody');
+  if (!body) return;
+  if (ui.chatTab === 'dm' && !ui.chatWith) {   // список друзей для личных сообщений
+    const friends = social ? social.friends : null, S = chat.summary, u = chatUnread();
+    if (!friends) { body.innerHTML = '<div class="skeleton"></div>'.repeat(3); if (!socialLoading) fetchSocial(); return; }
+    if (!friends.length) { body.innerHTML = `<div class="empty"><div class="empty-ico">✉️</div><div class="empty-title">Личные сообщения</div><div class="empty-text">Писать можно друзьям. Добавьте друга по коду во вкладке «Друзья».</div><button class="btn-small" data-action="gofriends" type="button" style="margin-top:10px">👥 К друзьям</button></div>`; return; }
+    const last = {};
+    ((S && S.dms) || []).forEach(d => { last[d.nickname.toLowerCase()] = d; });
+    const sorted = friends.slice().sort((a, b) => ((last[b.nickname.toLowerCase()] || {}).at || 0) - ((last[a.nickname.toLowerCase()] || {}).at || 0));
+    body.innerHTML = `<div class="chat-dms">${sorted.map((f, i) => { const d = last[f.nickname.toLowerCase()], unread = u.dm[f.nickname.toLowerCase()];
+      return `<button class="dm-row ${unread ? 'unread' : ''}" data-action="chatwith" data-id="${esc(f.nickname)}" type="button" style="--i:${Math.min(i, 12)}">
+        <span class="av-wrap"><span class="avatar sm" style="${avatarStyle(f.nickname)}">${esc(initialOf(f.nickname))}</span><i class="online-dot ${f.online ? 'on' : ''}"></i></span>
+        <span class="dm-info"><b>${esc(f.nickname)}</b><i>${d ? (d.lastMine ? 'Вы: ' : '') + esc(d.lastText) : 'Напишите первым 👋'}</i></span>
+        <span class="dm-meta">${d ? chatTime(d.at) : ''}${unread ? '<i class="cb">•</i>' : ''}</span></button>`; }).join('')}</div>`;
+    return;
+  }
+  const head = ui.chatTab === 'dm'
+    ? `<div class="chat-head"><button class="btn-small soft" data-action="chatback" type="button">←</button><span class="avatar sm" style="${avatarStyle(ui.chatWith)}">${esc(initialOf(ui.chatWith))}</span><b data-nick="${esc(ui.chatWith)}">${esc(ui.chatWith)}</b></div>`
+    : ui.chatTab === 'ally' && social && social.alliance ? `<div class="chat-head"><span class="a-emb">${social.alliance.emblem}</span><b>${esc(social.alliance.name)}</b><span class="dim">· ${social.alliance.size} в альянсе</span></div>` : '';
+  body.innerHTML = `${head}<div class="chat-list" id="chatList"></div>
+    <div class="chat-input"><input id="chatInput" type="text" maxlength="200" autocomplete="off" enterkeyhint="send" placeholder="${ui.chatTab === 'global' ? 'Сообщение всем игрокам…' : ui.chatTab === 'ally' ? 'Сообщение альянсу…' : 'Сообщение для ' + esc(ui.chatWith) + '…'}"><button class="btn-small chat-send" data-action="chatsend" type="button">➤</button></div>
+    <div class="chat-note" id="chatNote">${ui.chatTab === 'global' ? 'Будьте вежливы: мат скрывается, ссылки запрещены, за спам — блокировка чата.' : ''}</div>`;
+  const L = chat.lists[chatKey()];
+  if (L) L.rendered = false;
+  renderChatList();
+  fetchChat(!L || !L.loaded);
+}
+function renderChatList() {
+  const el = $('chatList');
+  if (!el) return;
+  const L = chat.lists[chatKey()];
+  if (L) L.rendered = true;
+  if (ui.chatTab === 'ally' && social && !social.alliance) {
+    el.innerHTML = `<div class="empty"><div class="empty-ico">🛡️</div><div class="empty-title">Вы не в альянсе</div><div class="empty-text">Вступите в альянс во вкладке «Друзья» — здесь появится чат альянса.</div><button class="btn-small" data-action="goally" type="button" style="margin-top:10px">🛡️ Найти альянс</button></div>`;
+    if ($('chatInput')) $('chatInput').disabled = true;
+    return;
+  }
+  if (!L || !L.loaded) { el.innerHTML = chat.err ? `<div class="empty"><div class="empty-ico">📡</div><div class="empty-text">${chat.err === 'not_friends' ? 'Писать можно только друзьям' : 'Не удалось загрузить — попробуем ещё раз'}</div></div>` : '<div class="chat-loading"><span class="spinner"></span></div>'; return; }
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  const myLc = myProfile ? myProfile.nickname.toLowerCase() : '';
+  let prevNick = '', prevAt = 0;
+  el.innerHTML = L.msgs.length ? L.msgs.map(m => {
+    const mine = m.nickname.toLowerCase() === myLc, cont = m.nickname === prevNick && m.at - prevAt < 120000;
+    prevNick = m.nickname; prevAt = m.at;
+    return `<div class="msg ${mine ? 'mine' : ''} ${cont ? 'cont' : ''} ${m.sys ? 'sys' : ''}" data-mid="${m.id}">
+      ${mine || cont ? '' : `<span class="avatar sm" style="${avatarStyle(m.nickname)}" data-nick="${esc(m.nickname)}">${esc(initialOf(m.nickname))}</span>`}
+      <div class="bubble">${mine || cont ? '' : `<div class="m-nick" data-nick="${esc(m.nickname)}">${esc(m.nickname)}${m.admin ? ' <i class="adm">🛡️ админ</i>' : ''}${m.ally ? ` <i class="m-ally">${m.ally}</i>` : ''}</div>`}
+        <div class="m-text">${esc(m.text)}</div><div class="m-time">${chatTime(m.at)}${isAdmin && !mine ? ` <button class="m-del" data-action="chatdel" data-id="${m.id}" type="button">🗑</button> <button class="m-del" data-action="chatmute" data-id="${esc(m.nickname)}" type="button">🔇</button>` : ''}</div></div>
+    </div>`;
+  }).join('') : `<div class="empty"><div class="empty-ico">💬</div><div class="empty-text">${ui.chatTab === 'dm' ? 'Здесь пока пусто — напишите первым!' : 'Сообщений пока нет — начните разговор!'}</div></div>`;
+  if (atBottom || !L.scrolled) { el.scrollTop = el.scrollHeight; L.scrolled = true; }
+  if ($('chatInput')) $('chatInput').disabled = false;
+  if (chat.muted > Date.now() && $('chatNote')) $('chatNote').textContent = `🔇 Чат для вас закрыт до ${new Date(chat.muted).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`;
+}
+const CHAT_ERR = { too_fast: 'Не так быстро — подождите пару секунд', duplicate: 'Это сообщение уже отправлено', muted: 'Вам временно закрыт чат', empty: 'Пустое сообщение',
+  not_friends: 'Писать можно только друзьям', no_alliance: 'Вы не в альянсе', too_long: 'Слишком длинное сообщение' };
+async function sendChat() {
+  const inp = $('chatInput');
+  if (!inp) return;
+  const text = inp.value.replace(/\s+/g, ' ').trim();
+  if (!text) return;
+  if (Date.now() - chat.sendAt < 1200) { showToast(CHAT_ERR.too_fast, 1800); return; }
+  chat.sendAt = Date.now();
+  inp.value = '';
+  try {
+    const r = await api('/api/chat', { method: 'POST', body: { ch: ui.chatTab, with: ui.chatWith || undefined, text } });
+    const L = chat.lists[chatKey()];
+    if (L && r.message && !L.msgs.some(m => m.id === r.message.id)) { L.msgs.push(r.message); L.last = Math.max(L.last, r.message.id); L.scrolled = false; renderChatList(); markChatRead(chatKey(), L.last); }
+    Sound.ui();
+    setTimeout(() => fetchChat(false), 400);
+  } catch (e) {
+    inp.value = text;
+    Sound.error();
+    showToast(CHAT_ERR[e.message] || 'Не отправлено — проверьте интернет', 2500);
+    if (e.data && e.data.mutedUntil) chat.muted = e.data.mutedUntil;
+  }
+}
+function openChatWith(nick) {
+  ui.chatTab = 'dm'; ui.chatWith = nick;
+  if (ui.tab !== 'chat') openPanel('chat'); else { chatShellVer++; renderPanel(); }
+}
+async function chatAdmin(action, id) {
+  if (!isAdmin) return;
+  if (action === 'chatmute' && !(await askConfirm({ title: `Закрыть чат для ${id}?`, text: 'Игрок не сможет писать 24 часа.', ok: 'Закрыть чат', danger: true }))) return;
+  try {
+    await api(action === 'chatdel' ? '/api/chat/delete' : '/api/chat/mute', { method: 'POST', body: action === 'chatdel' ? { id: +id } : { nickname: id, hours: 24 } });
+    if (action === 'chatdel') { const L = chat.lists[chatKey()]; if (L) L.msgs = L.msgs.filter(m => m.id !== +id); renderChatList(); }
+    showToast(action === 'chatdel' ? 'Сообщение удалено' : `Чат для ${id} закрыт на сутки`, 2500);
+  } catch (e) { showToast('Не получилось: ' + (e.message || 'ошибка'), 2500); }
+}
+
+// ============================================================
+//  ОБУЧЕНИЕ НОВИЧКА
+// ============================================================
+// Подсказки по шагам: подсветка нужной кнопки и короткий текст. Где нужно действие (тапнуть, открыть
+// вкладку, построить) — ждём его; остальное — кнопка «Дальше». Можно пропустить; пройти заново — в настройках.
+const TUT_DONE = 99;
+const TUT_REWARD = 3;
+const TUT = [
+  { title: 'Добро пожаловать, командир! 🚀', text: 'Перед вами молодая планета. Вы проведёте её через эпохи — от лавы до звёздной империи, а потом откроете новые миры.', btn: 'Начать' },
+  { target: 'planet', title: 'Тапайте по планете 👆', text: 'Каждый тап приносит ☀️ Солнце — главный ресурс Земли. Сделайте 10 тапов.', wait: 'tap', need: 10 },
+  { target: '.tab-btn[data-tab="build"]', title: 'Постройки 🏗️', text: 'Откройте вкладку «Постройки» внизу.', wait: 'tab:build' },
+  { target: () => document.querySelector('[data-card="solar_collector"] .btn-buy'), title: 'Первая постройка', text: 'Купите «Поглотитель света»: он сам собирает Солнце — даже когда вас нет в игре.', wait: 'build' },
+  { target: '.pp-mini', title: 'Цели престижа 🌀', text: 'Здесь видно, сколько осталось до престижа: он сбрасывает планету, но навсегда удваивает её доход.', btn: 'Дальше' },
+  { target: '#eraCard', title: 'Эволюция ⏫', text: 'Копите ресурсы и жмите «Эволюция» — планета перейдёт в новую эпоху и откроет новые постройки.', btn: 'Дальше' },
+  { target: '.tab-btn[data-tab="dev"]', title: 'Развитие', text: 'Престиж планеты и улучшения за 💎 кристаллы — в одной вкладке.', btn: 'Дальше' },
+  { target: '#astPill', close: true, title: 'Астероиды ☄️', text: 'Иногда к планете летит астероид — жмите по нему! За сбитые дают 💎 кристаллы.', btn: 'Дальше' },
+  { target: '#questBtn', title: 'Квесты и магазин', text: 'Задания дают 🔷 сапфиры. В магазине за них — сундуки и новые звуки тапа.', btn: 'Дальше' },
+  { target: '#mapBtn', title: 'Карта 🪐', text: 'Новые планеты, а дальше — чёрная дыра в измерение CS2 и вселенную Майнкрафт!', btn: 'Дальше' },
+  { target: '.tab-btn[data-tab="chat"]', title: 'Чат, друзья и топ', text: 'Общайтесь с игроками, вступайте в альянс и поднимайтесь в рейтинге. Удачи!', btn: `Готово (+${TUT_REWARD} 🔷)` }
+];
+let tutCount = 0, tutLoop = 0;
+const tutOn = () => playing && state.tut !== TUT_DONE && state.tut < TUT.length;
+function tutStart() { if (tutOn()) { tutCount = 0; tutRender(); } }
+function tutRender() {
+  const el = $('coach');
+  if (!tutOn()) { el.classList.remove('open'); cancelAnimationFrame(tutLoop); return; }
+  const st = TUT[state.tut];
+  if (st.close && ui.tab) closePanel();   // дальше подсказки про кнопки по бокам — их видно, когда панель закрыта
+  $('coachTitle').textContent = st.title;
+  $('coachText').textContent = st.text + (st.wait === 'tap' ? ` (${Math.min(tutCount, st.need)}/${st.need})` : '');
+  $('coachNext').hidden = !st.btn;
+  $('coachNext').textContent = st.btn || '';
+  $('coachStep').textContent = `${state.tut + 1} / ${TUT.length}`;
+  el.classList.add('open');
+  cancelAnimationFrame(tutLoop);
+  const place = () => {
+    if (!tutOn()) { el.classList.remove('open'); return; }
+    tutLoop = requestAnimationFrame(place);
+    const busy = screenBusy();
+    el.classList.toggle('hidden', busy);
+    if (busy) return;
+    let r = null;
+    if (st.target === 'planet') r = { left: cx - planetRadius, top: cy - planetRadius, width: planetRadius * 2, height: planetRadius * 2, round: true };
+    else if (st.target) {
+      const t = typeof st.target === 'function' ? st.target() : document.querySelector(st.target);
+      if (t && t.offsetParent !== null) { const b = t.getBoundingClientRect(); r = { left: b.left, top: b.top, width: b.width, height: b.height }; }
+    }
+    const spot = $('coachSpot'), bub = $('coachBubble');
+    if (r) {
+      const pad = 6;
+      spot.style.cssText = `left:${r.left - pad}px;top:${r.top - pad}px;width:${r.width + pad * 2}px;height:${r.height + pad * 2}px;border-radius:${r.round ? '50%' : '16px'}`;
+      spot.hidden = false;
+      const below = r.top + r.height / 2 < innerHeight / 2;
+      bub.style.top = below ? Math.min(innerHeight - bub.offsetHeight - 10, r.top + r.height + 14) + 'px' : Math.max(10, r.top - bub.offsetHeight - 14) + 'px';
+    } else { spot.hidden = true; bub.style.top = Math.max(10, (innerHeight - bub.offsetHeight) / 2) + 'px'; }
+  };
+  place();
+}
+function tutEvent(ev) {
+  if (!tutOn()) return;
+  const st = TUT[state.tut];
+  if (st.wait !== ev) return;
+  if (ev === 'tap' && ++tutCount < st.need) { $('coachText').textContent = `${st.text} (${tutCount}/${st.need})`; return; }
+  // шаг засчитан один раз: лишние тапы, пока ждём перехода, не должны перескакивать следующий шаг
+  if (tutEvent.wait === state.tut) return;
+  const at = tutEvent.wait = state.tut;
+  setTimeout(() => { tutEvent.wait = -1; if (state.tut === at) tutNext(); }, ev === 'tap' ? 200 : 450);
+}
+tutEvent.wait = -1;
+function tutNext() {
+  if (!tutOn()) return;
+  state.tut++;
+  tutCount = 0;
+  if (state.tut >= TUT.length) {
+    state.tut = TUT_DONE;
+    state.sapphires += TUT_REWARD;
+    Sound.coin();
+    showToast(`🎓 Обучение пройдено! +${TUT_REWARD} 🔷 сапфира`, 3500);
+    renderHeaderAndEra();
+  } else Sound.ui();
+  saveLocal(); queueSync(3000);
+  tutRender();
+}
+function tutSkip() { state.tut = TUT_DONE; saveLocal(); tutRender(); Sound.ui(); }
+function tutRestart() { state.tut = 0; closePanel(); tutStart(); }
+
+// ============================================================
+//  ЧИТ-МЕНЮ АДМИНИСТРАТОРА
+// ============================================================
+// Включается секретным кодом в поле «Промокод» (сервер помечает аккаунт админом). Нужно для проверки игры:
+// любые валюты, престижи вверх и вниз, этапы, все планеты и измерения, астероиды. Сервер принимает
+// прогресс админа без ограничения скорости роста рейтинга.
+let isAdmin = false;
+const cheat = { res: 'gems', amt: 1e6 };
+function cheatDone(msg) { state.rebirths = totalPrestige(); saveLocal(); queueSync(400); onPlanetChanged(); renderHeaderAndEra(); if (msg) showToast('🛠️ ' + msg, 1800); Sound.coin(); }
+function openCheats() {
+  if (!isAdmin) return;
+  const sheet = $('settingsSheet'), pid = cur(), P = PL(pid);
+  const keys = [['gems', '💎 Кристаллы'], ['sapphire', '🔷 Сапфиры'], ...P.res.map(r => [`${pid}:${r}`, `${RES[r].icon} ${RES[r].name}`]), ['all', '🪐 Все ресурсы всех планет']];
+  if (!keys.some(k => k[0] === cheat.res)) cheat.res = 'gems';
+  sheet.innerHTML = `
+    <div class="q-head"><div><h2>🛠️ Чит-меню</h2><div class="q-sub">Только для администратора · ${P.icon} ${P.name}</div></div><button class="btn-icon" id="setClose" type="button">✕</button></div>
+    <div class="set-title">Валюта и ресурсы</div>
+    <div class="set-group cheat">
+      <div class="cheat-keys">${keys.map(([k, l]) => `<button type="button" class="${k === cheat.res ? 'sel' : ''}" data-ck="${k}">${l}</button>`).join('')}</div>
+      <div class="add-row"><input id="chAmt" type="text" inputmode="decimal" value="${cheat.amt}" placeholder="Сколько (можно 1e9)"></div>
+      <div class="cheat-amts">${[100, 1e4, 1e6, 1e9, 1e12, 1e15].map(v => `<button type="button" data-ca="${v}">${fmt(v)}</button>`).join('')}</div>
+      <div class="cheat-row"><button class="btn-small" data-cop="add" type="button">＋ Добавить</button><button class="btn-small soft" data-cop="sub" type="button">− Забрать</button><button class="btn-small soft" data-cop="set" type="button">= Сделать столько</button></div>
+    </div>
+    <div class="set-title">Престиж и этап · ${P.name}</div>
+    <div class="set-group cheat">
+      <div class="cheat-row"><span class="ch-lbl">🌀 Престижей: <b>${prestigeCount(pid)}</b></span>${[-10, -1, 1, 10].map(v => `<button class="btn-small ${v < 0 ? 'soft' : ''}" data-cpr="${v}" type="button">${v > 0 ? '+' : ''}${v}</button>`).join('')}</div>
+      <div class="cheat-row"><span class="ch-lbl">⏫ ${P.stageWord}: <b>${ps(pid).era + 1}/${P.eras.length}</b></span><button class="btn-small soft" data-cst="-1" type="button">−1</button><button class="btn-small" data-cst="1" type="button">+1</button><button class="btn-small" data-cst="max" type="button">Макс</button></div>
+      <div class="cheat-row"><span class="ch-lbl">🏗️ Построек: <b>${fmt(planetBuildings(pid))}</b></span><button class="btn-small" data-cb="10" type="button">+10 каждой</button><button class="btn-small" data-cb="100" type="button">+100</button><button class="btn-small soft" data-cb="0" type="button">Снести</button></div>
+      <div class="cheat-row"><button class="btn-small" data-cx="prestigeAll" type="button">🌀 +1 престиж всем планетам</button><button class="btn-small soft" data-cx="prestigeZero" type="button">Обнулить престижи планеты</button></div>
+    </div>
+    <div class="set-title">Мир</div>
+    <div class="set-group cheat"><div class="cheat-grid">
+      <button class="btn-small" data-cx="unlockAll" type="button">🪐 Открыть все планеты и измерения</button>
+      <button class="btn-small" data-cx="maxAll" type="button">⭐ Все этапы всех планет — макс</button>
+      <button class="btn-small" data-cx="perks" type="button">🌳 Все перки на максимум</button>
+      <button class="btn-small" data-cx="items" type="button">🎩 Все образы и звуки</button>
+      <button class="btn-small" data-cx="asteroid" type="button">☄️ Астероид сейчас</button>
+      <button class="btn-small" data-cx="golden" type="button">✨ Золотой астероид</button>
+      <button class="btn-small" data-cx="boost" type="button">⚡ Ускоритель ×2 на час</button>
+      <button class="btn-small" data-cx="offline" type="button">😴 +8 часов офлайн-дохода</button>
+      <button class="btn-small soft" data-cx="quests" type="button">📜 Новые задания дня</button>
+      <button class="btn-small soft" data-cx="tutorial" type="button">🎓 Обучение заново</button>
+    </div></div>
+    <div class="set-text dim">Изменения сохраняются в облако. Рейтинг админа сервер принимает без ограничений — не забудьте вернуть свой прогресс после проверки.</div>
+    <button class="btn-soft" id="chBack" type="button">← Настройки</button>`;
+  $('setClose').onclick = () => $('settingsOverlay').classList.remove('open');
+  $('chBack').onclick = () => renderSettings();
+  const amount = () => { const v = Number(String($('chAmt').value).replace(/\s|,/g, '').replace(/[кk]$/i, 'e3')); return isFinite(v) && v >= 0 ? v : 0; };
+  sheet.querySelectorAll('[data-ck]').forEach(b => b.onclick = () => { cheat.res = b.dataset.ck; cheat.amt = amount(); openCheats(); });
+  sheet.querySelectorAll('[data-ca]').forEach(b => b.onclick = () => { $('chAmt').value = b.dataset.ca; cheat.amt = +b.dataset.ca; Sound.ui(); });
+  sheet.querySelectorAll('[data-cop]').forEach(b => b.onclick = () => {
+    const v = amount(), op = b.dataset.cop; cheat.amt = v;
+    const apply = (key) => { const have = getRes(key); addRes(key, op === 'add' ? v : op === 'sub' ? -v : v - have); };
+    if (cheat.res === 'all') state.unlocked.forEach(x => PL(x).res.forEach(r => apply(`${x}:${r}`)));
+    else apply(cheat.res);
+    cheatDone(`${op === 'add' ? '+' : op === 'sub' ? '−' : '='}${fmt(v)}`); openCheats();
+  });
+  sheet.querySelectorAll('[data-cpr]').forEach(b => b.onclick = () => { state.ppr[pid] = Math.max(0, prestigeCount(pid) + (+b.dataset.cpr)); cheatDone(`Престижей: ${state.ppr[pid]}`); openCheats(); });
+  sheet.querySelectorAll('[data-cst]').forEach(b => b.onclick = () => {
+    const max = P.eras.length - 1, v = b.dataset.cst;
+    ps(pid).era = v === 'max' ? max : Math.min(max, Math.max(0, ps(pid).era + (+v)));
+    state.stats.maxEra[pid] = Math.max(state.stats.maxEra[pid] || 0, ps(pid).era);
+    cheatDone(`${P.stageWord} ${ps(pid).era + 1}`); openCheats();
+  });
+  sheet.querySelectorAll('[data-cb]').forEach(b => b.onclick = () => {
+    const v = +b.dataset.cb;
+    P.buildings.forEach(x => { if (x.u <= ps(pid).era || v === 0) ps(pid).counts[x.id] = v === 0 ? 0 : (ps(pid).counts[x.id] || 0) + v; });
+    cheatDone(v ? `+${v} каждой постройки` : 'Постройки снесены'); openCheats();
+  });
+  sheet.querySelectorAll('[data-cx]').forEach(b => b.onclick = () => {
+    const a = b.dataset.cx;
+    if (a === 'prestigeAll') state.unlocked.forEach(x => { state.ppr[x] = prestigeCount(x) + 1; });
+    else if (a === 'prestigeZero') state.ppr[pid] = 0;
+    else if (a === 'unlockAll') { state.unis = UNIVERSE_ORDER.slice(); PLANET_ORDER.forEach(x => { if (!isUnlocked(x)) state.unlocked.push(x); }); }
+    else if (a === 'maxAll') state.unlocked.forEach(x => { ps(x).era = PL(x).eras.length - 1; state.stats.maxEra[x] = ps(x).era; });
+    else if (a === 'perks') { GLOBAL_PERKS.forEach(p => { state.perks[p.id] = p.max; }); state.unlocked.forEach(x => PL(x).perks.forEach(p => { state.ppk[x][p.id] = p.max; })); }
+    else if (a === 'items') COSMETICS.forEach(c => { if (!state.ownedCosmetics.includes(c.id) && !c.free) state.ownedCosmetics.push(c.id); });
+    else if (a === 'asteroid' || a === 'golden') { $('settingsOverlay').classList.remove('open'); endAsteroid(true); spawnAsteroid(a === 'golden'); return; }
+    else if (a === 'boost') state.boostUntil = Math.max(Date.now(), state.boostUntil || 0) + 3600000;
+    else if (a === 'offline') grantOffline(8 * 3600);
+    else if (a === 'quests') { state.quests.day = ''; ensureQuestDay(); updateQuestBadge.n = -1; }
+    else if (a === 'tutorial') { $('settingsOverlay').classList.remove('open'); tutRestart(); return; }
+    cheatDone('Готово'); openCheats();
+  });
+}
+
+// ============================================================
 //  НАСТРОЙКИ
 // ============================================================
 function openSettings() { renderSettings(); $('settingsOverlay').classList.add('open'); Sound.ui(); }
@@ -1618,8 +2138,10 @@ function renderSettings() {
     </div>
     <div class="set-title">Аккаунт</div>
     <div class="sheet-stack">
+      ${isAdmin && playing ? '<button class="btn-main" id="setCheats" type="button">🛠️ Чит-меню администратора</button>' : ''}
       ${myProfile ? '<button class="btn-soft" id="setProfile" type="button">👤 Мой профиль и статистика</button>' : ''}
       <button class="btn-soft" id="setCode" type="button">🎁 Ввести промокод</button>
+      ${playing ? '<button class="btn-soft" id="setTut" type="button">🎓 Пройти обучение заново</button>' : ''}
       ${online && !demo && IS_TWITCH && !twitchLinked ? '<button class="btn-main" id="setTwLink" type="button">🔗 Привязать аккаунт из игры</button>' : ''}
       ${online && !demo && IS_TWITCH && twitchLinked ? '<div class="set-text">🔗 Привязан аккаунт из игры — прогресс общий с телефоном и сайтом</div><button class="btn-soft" id="setTwUnlink" type="button">Отвязать аккаунт из игры</button>' : ''}
       ${online && !demo && !IS_TWITCH ? '<button class="btn-soft" id="setTwCode" type="button">📺 Играть на Twitch</button>' : ''}
@@ -1642,6 +2164,8 @@ function renderSettings() {
   $('setNumShort').onclick = () => { prefs.sci = false; savePrefs(); renderSettings(); refreshUIFull(); };
   $('setNumSci').onclick = () => { prefs.sci = true; savePrefs(); renderSettings(); refreshUIFull(); };
   if ($('setProfile')) $('setProfile').onclick = () => { close(); openProfile(); };
+  if ($('setCheats')) $('setCheats').onclick = () => openCheats();
+  if ($('setTut')) $('setTut').onclick = () => { close(); tutRestart(); };
   $('setCode').onclick = () => { close(); openCodes(); };
   if ($('setUpdate')) $('setUpdate').onclick = () => { close(); downloadUpdate(); };
   if ($('setLogout')) $('setLogout').onclick = () => { close(); logout(); };
@@ -2036,13 +2560,193 @@ function drawMercury(R, era, now) {
   ctx.fillStyle = hot; ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
 }
 
-// шапки
+// ---------- Планеты-карты измерения CS2 ----------
+// Песчаная (каменная, зелёная) сфера с кварталами: дома, крыши, пальмы, каналы или ящики — по теме карты.
+// С каждым этапом построек больше, ночью горят огни, на последних этапах планета сияет.
+const MAP_BLOBS = [
+  { lon: 0.2, lat: -0.25, r: 0.34 }, { lon: 1.1, lat: 0.3, r: 0.3 }, { lon: 2.0, lat: -0.05, r: 0.38 }, { lon: 2.9, lat: 0.4, r: 0.26 },
+  { lon: 3.7, lat: -0.35, r: 0.32 }, { lon: 4.6, lat: 0.15, r: 0.36 }, { lon: 5.5, lat: -0.15, r: 0.3 }
+];
+// какие кварталы соединены коридорами (по порядку появления с этапами)
+const MAP_LANES = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 0], [1, 4], [2, 5], [0, 3], [3, 6], [1, 5], [2, 6]];
+// линия по поверхности сферы через точки {lon, lat}: обратная сторона не рисуется
+function mapPath(R, pts, steps) {
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    let dl = b.lon - a.lon;
+    if (dl > Math.PI) dl -= Math.PI * 2; else if (dl < -Math.PI) dl += Math.PI * 2;
+    for (let k = 0; k <= steps; k++) {
+      const t = k / steps, p = projectBlob({ lon: a.lon + dl * t, lat: a.lat + (b.lat - a.lat) * t, r: 0.1 }, R);
+      if (!p) { started = false; continue; }
+      if (!started) { ctx.moveTo(p.px, p.py); started = true; } else ctx.lineTo(p.px, p.py);
+    }
+  }
+  ctx.stroke();
+}
+function drawMapPlanet(R, era, now, L) {
+  fillSphere(R, L.base);
+  // дюны / рельеф
+  for (let i = 0; i < 6; i++) {
+    const y = cy - R + (i + 0.5) * (R * 2 / 6), w = Math.sqrt(Math.max(0, R * R - (y - cy) * (y - cy)));
+    ctx.fillStyle = `rgba(255,255,255,${0.05 + 0.03 * (i % 2)})`;
+    ctx.beginPath(); ctx.ellipse(cx + Math.sin(rotAngle * 2 + i) * R * 0.1, y, w, R * 0.05, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  if (L.feat === 'water' && era >= 2) {   // каналы Анубиса
+    ctx.strokeStyle = 'rgba(20,184,166,0.85)'; ctx.lineWidth = Math.max(2, R * 0.05);
+    for (let k = 0; k < 2; k++) {
+      ctx.beginPath(); let started = false;
+      for (let a = 0; a <= 64; a++) {
+        const lon = (a / 64) * Math.PI * 2, lat = (k ? 0.32 : -0.18) + Math.sin(lon * 3) * 0.08;
+        const p = projectBlob({ lon, lat, r: 0.1 }, R); if (!p) { started = false; continue; }
+        if (!started) { ctx.moveTo(p.px, p.py); started = true; } else ctx.lineTo(p.px, p.py);
+      }
+      ctx.stroke();
+    }
+  }
+  if (L.feat === 'jungle') {   // кроны джунглей Древнего
+    MAP_BLOBS.forEach((b, i) => { const p = projectBlob({ ...b, lon: b.lon + 0.5, r: b.r * 0.9 }, R); if (!p) return;
+      ctx.fillStyle = i % 2 ? 'rgba(21,128,61,0.75)' : 'rgba(22,101,52,0.7)'; ctx.beginPath(); ctx.ellipse(p.px, p.py, p.radX, p.radY * 0.8, 0.3, 0, Math.PI * 2); ctx.fill(); });
+  }
+  // сетка радара: как мини-карта в углу экрана
+  ctx.strokeStyle = 'rgba(0,0,0,0.09)'; ctx.lineWidth = 1;
+  for (let k = 0; k < 12; k++) mapPath(R, [{ lon: k * Math.PI / 6, lat: -1.4 }, { lon: k * Math.PI / 6, lat: 1.4 }], 14);
+  for (const lat of [-0.75, -0.25, 0.25, 0.75]) mapPath(R, [0, 1, 2, 3, 4].map(k => ({ lon: k * Math.PI / 2, lat })), 12);
+  // коридоры между кварталами: тёмная дорога и светлая середина
+  const lanes = MAP_LANES.slice(0, Math.min(MAP_LANES.length, 4 + era));
+  for (const pass of [0, 1]) {
+    ctx.strokeStyle = pass ? 'rgba(255,255,255,0.16)' : `${L.base[2]}66`;
+    ctx.lineWidth = Math.max(1.5, R * (pass ? 0.012 : 0.05));
+    ctx.lineCap = 'round';
+    lanes.forEach(([a, b]) => mapPath(R, [MAP_BLOBS[a], MAP_BLOBS[b]], 18));
+  }
+  const houses = Math.min(9, 2 + era);
+  MAP_BLOBS.forEach((b, bi) => {
+    const p = projectBlob(b, R); if (!p) return;
+    ctx.fillStyle = L.blob; ctx.globalAlpha = 0.6;
+    ctx.beginPath(); ctx.ellipse(p.px, p.py, p.radX, p.radY * 0.75, 0.2, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = `${L.base[2]}55`; ctx.lineWidth = Math.max(1, R * 0.012); ctx.stroke();   // стены квартала
+    const s = Math.max(2, R * 0.06 * p.cos);
+    for (let h = 0; h < houses; h++) {
+      const ox = (((bi * 37 + h * 53) % 100) / 100 - 0.5) * p.radX * 1.3, oy = (((bi * 17 + h * 29) % 100) / 100 - 0.5) * p.radY;
+      const x = p.px + ox, y = p.py + oy, hh = s * (0.8 + ((h * 7) % 5) * 0.15);
+      if (L.feat === 'crate' && h % 2) {   // ящики Даст 2
+        ctx.fillStyle = '#a16207'; ctx.fillRect(x - s * 0.5, y - s * 0.5, s, s);
+        ctx.strokeStyle = '#713f12'; ctx.lineWidth = 1; ctx.strokeRect(x - s * 0.5, y - s * 0.5, s, s);
+        ctx.beginPath(); ctx.moveTo(x - s * 0.5, y - s * 0.5); ctx.lineTo(x + s * 0.5, y + s * 0.5); ctx.moveTo(x + s * 0.5, y - s * 0.5); ctx.lineTo(x - s * 0.5, y + s * 0.5); ctx.stroke();
+        continue;
+      }
+      ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(x - s * 0.55 + 1, y - hh + 2, s * 1.1, hh);
+      ctx.fillStyle = L.base[0]; ctx.fillRect(x - s * 0.55, y - hh, s * 1.1, hh);
+      if (L.feat === 'roof' || L.feat === 'jungle') {   // черепица Инферно / каменные пирамидки Древнего
+        ctx.fillStyle = L.roof; ctx.beginPath(); ctx.moveTo(x - s * 0.7, y - hh); ctx.lineTo(x, y - hh - s * 0.55); ctx.lineTo(x + s * 0.7, y - hh); ctx.closePath(); ctx.fill();
+      } else if (h % 3 === 0 && era >= 3) {   // купола и арки
+        ctx.fillStyle = L.roof; ctx.beginPath(); ctx.arc(x, y - hh, s * 0.5, Math.PI, 0); ctx.fill();
+      } else { ctx.fillStyle = L.roof; ctx.fillRect(x - s * 0.55, y - hh, s * 1.1, Math.max(1, s * 0.18)); }
+      ctx.fillStyle = 'rgba(30,20,10,0.6)'; ctx.fillRect(x - s * 0.15, y - hh * 0.45, s * 0.3, hh * 0.45);   // дверь
+    }
+    if ((L.feat === 'palm' && era >= 1) || (L.feat === 'water' && era >= 5)) {   // пальмы
+      for (let k = 0; k < 2; k++) {
+        const x = p.px + p.radX * (k ? 0.7 : -0.75), y = p.py + p.radY * 0.35, t = Math.max(3, R * 0.07 * p.cos);
+        ctx.strokeStyle = '#78350f'; ctx.lineWidth = Math.max(1, t * 0.18); ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + t * 0.15, y - t); ctx.stroke();
+        ctx.fillStyle = '#16a34a'; for (let f = 0; f < 4; f++) { ctx.beginPath(); ctx.ellipse(x + t * 0.15 + Math.cos(f * 1.6) * t * 0.35, y - t + Math.sin(f * 1.6) * t * 0.15, t * 0.38, t * 0.13, f * 1.6, 0, Math.PI * 2); ctx.fill(); }
+      }
+    }
+  });
+  if (L.feat === 'crate' || era < 2) drawClouds(R, era < 2 ? 0.22 : 0.12, '253,230,138');   // песчаные бури
+  if (era >= 4) {   // флаги контроля
+    const p = projectBlob({ lon: 2.0, lat: -0.05, r: 0.2 }, R);
+    if (p && p.cos > 0.3) { const h = R * 0.22 * p.cos; ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(p.px, p.py); ctx.lineTo(p.px, p.py - h); ctx.stroke();
+      ctx.fillStyle = L.accent; ctx.beginPath(); ctx.moveTo(p.px, p.py - h); ctx.lineTo(p.px + h * 0.5, p.py - h * 0.82 + Math.sin(now / 200) * 2); ctx.lineTo(p.px, p.py - h * 0.64); ctx.closePath(); ctx.fill(); }
+  }
+  if (era >= 6) drawLights(R, MAP_BLOBS, Math.min(4, era - 4), L.feat === 'roof' ? '251,146,60' : '253,224,71');
+  // точки закладки A и B, с 3-го этапа — респауны CT и T
+  const marks = [{ b: 1, t: 'A', c: '#ef4444' }, { b: 4, t: 'B', c: '#ef4444' }];
+  if (era >= 2) marks.push({ b: 6, t: 'CT', c: '#3b82f6' }, { b: 2, t: 'T', c: '#f59e0b' });
+  marks.forEach(m => {
+    const p = projectBlob({ ...MAP_BLOBS[m.b], lat: MAP_BLOBS[m.b].lat - 0.12 }, R); if (!p || p.cos < 0.25) return;
+    const r = Math.max(5, R * 0.085 * p.cos), pulse = m.t.length === 1 ? 1 + 0.08 * Math.sin(now / 300 + m.b) : 1;
+    ctx.globalAlpha = Math.min(1, (p.cos - 0.25) * 3);
+    ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.beginPath(); ctx.arc(p.px + 1.5, p.py + 2, r * pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = m.c; ctx.beginPath(); ctx.arc(p.px, p.py, r * pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = Math.max(1, r * 0.14); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = `900 ${Math.round(r * (m.t.length > 1 ? 0.95 : 1.25))}px system-ui, sans-serif`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(m.t, p.px, p.py + r * 0.06);
+    ctx.globalAlpha = 1;
+  });
+  if (era >= 8) { const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R); g.addColorStop(0, `rgba(254,240,138,${0.12 + 0.05 * Math.sin(now / 500)})`); g.addColorStop(1, 'rgba(254,240,138,0)'); ctx.fillStyle = g; ctx.fillRect(cx - R, cy - R, R * 2, R * 2); }
+}
+
+// ---------- Планеты-биомы вселенной Майнкрафт ----------
+// Сфера из «блоков»: сетка широт и долгот, у каждой клетки свой цвет. Вода (или лава в Незере), постройки
+// появляются с этапами, ночью светятся окна. Цвета клеток считаются один раз и берутся из кэша.
+const VOXEL_ROWS = 14, VOXEL_COLS = 28;
+const voxelCache = new Map();
+function voxelCells(pid, era, L) {
+  const key = pid + ':' + era;
+  let cells = voxelCache.get(key);
+  if (cells) return cells;
+  cells = [];
+  let seed = hashStr(pid);
+  const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+  for (let r = 0; r < VOXEL_ROWS; r++) for (let c = 0; c < VOXEL_COLS; c++) {
+    const lat = -Math.PI / 2 + (r + 0.5) * Math.PI / VOXEL_ROWS, lon = (c / VOXEL_COLS) * Math.PI * 2;
+    const n = Math.sin(lon * 2 + 1.3) * Math.cos(lat * 3) + Math.sin(lon * 5 + lat * 4) * 0.4;
+    const x = rnd();
+    let col = L.pal[Math.floor(x * 4)], kind = 'land';
+    if (n < -0.55 && L.water) { col = L.water; kind = 'water'; }
+    else if (L.snow && Math.abs(lat) > 1.1) col = '#ffffff';
+    else if (!L.snow && Math.abs(lat) > 1.25 && !L.glow) col = '#f8fafc';   // снег на полюсах
+    // постройки: чем выше этап, тем больше клеток застроено
+    if (kind === 'land' && x > 0.5 && rnd() < era * 0.035) { kind = 'build'; col = era >= 7 ? (L.glow ? '#e9d5ff' : '#94a3b8') : era >= 3 ? '#9ca3af' : '#a16207'; }
+    cells.push({ lat, lon, col, kind, k: x });
+  }
+  voxelCache.set(key, cells);
+  return cells;
+}
+function drawVoxelPlanet(R, era, now, L, pid) {
+  fillSphere(R, [L.pal[2], L.pal[1], '#0b0b0b']);
+  const cells = voxelCells(pid, era, L);
+  const cw2 = (Math.PI * 2 * R) / VOXEL_COLS, ch2 = (Math.PI * R) / VOXEL_ROWS;
+  for (const c of cells) {
+    let lon = (c.lon + rotAngle) % (Math.PI * 2); if (lon > Math.PI) lon -= Math.PI * 2;
+    const z = Math.cos(lon) * Math.cos(c.lat);
+    if (z < 0.04) continue;
+    const x = cx + Math.sin(lon) * Math.cos(c.lat) * R, y = cy + Math.sin(c.lat) * R;
+    const w = Math.max(1, cw2 * Math.cos(c.lat) * Math.cos(lon) * 1.04), h = Math.max(1, ch2 * Math.cos(c.lat) * 1.04 + ch2 * 0.12);
+    let col = c.col;
+    if (c.kind === 'water' && L.glow) col = `rgb(${249 - (Math.sin(now / 300 + c.k * 9) + 1) * 12},${115 + (Math.sin(now / 400 + c.k * 7) + 1) * 30},22)`;   // лава
+    ctx.fillStyle = col; ctx.fillRect(x - w / 2, y - h / 2, w, h);
+    ctx.fillStyle = 'rgba(0,0,0,0.16)'; ctx.fillRect(x - w / 2, y + h / 2 - Math.max(1, h * 0.14), w, Math.max(1, h * 0.14));   // грань блока
+    if (c.kind === 'build') { ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(x - w * 0.15, y - h * 0.1, w * 0.3, h * 0.45); }
+    if (c.kind === 'build' && era >= 5) {   // окна светятся на ночной стороне
+      const dark = ((x - cx) * 0.6 + (y - cy) * 0.5) / R + 0.25;
+      if (dark > 0.1) { ctx.fillStyle = `rgba(253,224,71,${Math.min(0.95, dark)})`; ctx.fillRect(x - w * 0.3, y - h * 0.3, Math.max(1, w * 0.2), Math.max(1, h * 0.2)); ctx.fillRect(x + w * 0.1, y - h * 0.3, Math.max(1, w * 0.2), Math.max(1, h * 0.2)); }
+    }
+  }
+  if (L.glow) {   // искры Незера / Края
+    for (let k = 0; k < 10; k++) { const a = now / 1500 + k * 0.63, rr = R * (0.2 + ((k * 37) % 10) / 12); ctx.fillStyle = `${L.glow}${Math.floor(140 + 100 * Math.sin(now / 200 + k)).toString(16).padStart(2, '0')}`; ctx.fillRect(cx + Math.cos(a) * rr, cy + Math.sin(a * 1.3) * rr * 0.7, 2.5, 2.5); }
+  }
+  if (!L.glow && !L.snow && era >= 1) drawClouds(R, 0.35);   // квадратные облака рисуются обычными — так мягче
+  if (L.snow && era >= 7) {   // северное сияние
+    const t = 0.3 + 0.2 * Math.sin(now / 500);
+    ctx.fillStyle = `rgba(74,222,128,${t})`; ctx.beginPath(); ctx.ellipse(cx, cy - R * 0.9, R * 0.6, R * 0.12, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = `rgba(167,139,250,${t * 0.8})`; ctx.beginPath(); ctx.ellipse(cx, cy - R * 0.78, R * 0.5, R * 0.08, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  if (era >= 9) { ctx.fillStyle = `rgba(255,255,255,${0.06 + 0.04 * Math.sin(now / 600)})`; ctx.fillRect(cx - R, cy - R, R * 2, R * 2); }
+}
+
+// шапки: эти рисуются вручную, остальные — значком над планетой
+const DRAWN_HATS = new Set(['hat_crown', 'hat_tophat', 'hat_wizard', 'hat_ufo', 'hat_halo', 'hat_party', 'hat_helmet', 'hat_rings', 'hat_star', 'hat_comet']);
 function drawHat(R) {
   const id = state.look[cur()].hat;
   if (!id) return;
   const u = R / 100;
-  if (id === 'hat_flowers' || id === 'hat_shades') {   // венок и очки — значок над планетой
-    const it = COSMETICS.find(c => c.id === id), sz = R * (id === 'hat_shades' ? 0.75 : 0.62);
+  if (!DRAWN_HATS.has(id)) {   // остальные шапки (венок, очки, образы новых измерений) — значок над планетой
+    const it = COSMETICS.find(c => c.id === id); if (!it) return;
+    const sz = R * (id === 'hat_shades' ? 0.75 : 0.62);
     const bob = Math.sin(performance.now() / 700) * R * 0.02;
     ctx.drawImage(emojiSprite(it.icon), cx - sz / 2, cy - R - sz * (id === 'hat_shades' ? 0.42 : 0.62) + bob, sz, sz);
     return;
@@ -2210,11 +2914,22 @@ function drawSurfaceBuildings(R, pid) {
   ctx.globalAlpha = 1;
 }
 
+// Кадр: ошибка рисования (например, у новой планеты) не должна ломать игру — сбрасываем холст и рисуем дальше.
+let renderErrAt = -1e9;
 function renderFrame(now) {
   requestAnimationFrame(renderFrame);
+  try { drawScene(now); }
+  catch (e) {
+    if (now - renderErrAt > 5000) { console.error('render', e); renderErrAt = now; }
+    canvas.width = canvas.width;   // незакрытые save()/clip() остались бы и на следующих кадрах
+  }
+}
+function drawScene(now) {
   const dt = Math.min(0.1, Math.max(0, (now - lastFrameTime) / 1000));
   lastFrameTime = now;
   const f = dt * 60;
+  // полёт астероида считаем до любого рисования: даже если кадр не дорисуется, таймер идёт и удар случится
+  if (activeAsteroid) stepAsteroid(dt);
   ctx.setTransform(dprNow, 0, 0, dprNow, 0, 0);
   ctx.clearRect(0, 0, cw, ch);
   if (shake > 0.2) { ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake); shake *= Math.pow(0.88, f); } else shake = 0;
@@ -2331,11 +3046,14 @@ function renderFrame(now) {
   // шар планеты
   ctx.save();
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
+  const LK = PL(pid).look;
   if (pid === 'earth') drawEarth(R, era, now);
   else if (pid === 'mars') drawMars(R, era, now);
   else if (pid === 'venus') drawVenus(R, era, now);
   else if (pid === 'mercury') drawMercury(R, era, now);
-  else drawJupiter(R, era, now);
+  else if (pid === 'jupiter') drawJupiter(R, era, now);
+  else if (LK && LK.kind === 'voxel') drawVoxelPlanet(R, era, now, LK, pid);
+  else if (LK) drawMapPlanet(R, era, now, LK);
 
   const shade = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.35, R * 0.1, cx + R * 0.2, cy + R * 0.2, R * 1.1);
   shade.addColorStop(0, 'rgba(255,255,255,0.18)'); shade.addColorStop(1, `rgba(0,0,0,${pid === 'jupiter' && era >= 9 ? 0.45 : 0.86})`);
@@ -2484,13 +3202,14 @@ function renderFrame(now) {
     else { ctx.globalAlpha = p.life; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (p.shrink ? p.life : 1), 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1; }
   }
 
-  if (activeAsteroid) updateAndDrawAsteroid(dt, f, now);
+  if (activeAsteroid) drawAsteroid(f, now);
 }
 
 // ============================================================
 //  АСТЕРОИДЫ
 // ============================================================
-function nextBossDelay() { return BOSS_MIN + Math.random() * (BOSS_MAX - BOSS_MIN); }
+// «Магнит астероидов»: −8% ожидания за уровень
+function nextBossDelay() { return (BOSS_MIN + Math.random() * (BOSS_MAX - BOSS_MIN)) * (1 - perk('ast_magnet') * 0.08); }
 function endAsteroid(silent) {
   activeAsteroid = null;
   if (!silent) bossCooldown = nextBossDelay();
@@ -2507,14 +3226,24 @@ function rockShape(n = 13, jitter = 0.32) {
 const ASTEROID_TINTS = {
   earth:   { light: '#a8a29e', mid: '#57534e', dark: '#1c1917', crater: 'rgba(28,25,23,0.55)', glow: '251,146,60', trail: ['#fde047', '#fb923c', '#ef4444'] },
   mars:    { light: '#fdba74', mid: '#9a3412', dark: '#2a0e05', crater: 'rgba(67,20,7,0.55)', glow: '249,115,22', trail: ['#fed7aa', '#f97316', '#b91c1c'] },
-  jupiter: { light: '#e0f2fe', mid: '#7dd3fc', dark: '#0c4a6e', crater: 'rgba(12,74,110,0.45)', glow: '125,211,252', trail: ['#ffffff', '#bae6fd', '#38bdf8'] }
+  jupiter: { light: '#e0f2fe', mid: '#7dd3fc', dark: '#0c4a6e', crater: 'rgba(12,74,110,0.45)', glow: '125,211,252', trail: ['#ffffff', '#bae6fd', '#38bdf8'] },
+  venus:   { light: '#fef9c3', mid: '#ca8a04', dark: '#3f2a05', crater: 'rgba(63,42,5,0.5)', glow: '250,204,21', trail: ['#fef3c7', '#facc15', '#ea580c'] },
+  mercury: { light: '#e7e5e4', mid: '#78716c', dark: '#1c1917', crater: 'rgba(28,25,23,0.55)', glow: '253,186,116', trail: ['#ffffff', '#fdba74', '#f97316'] },
+  cs:      { light: '#fde68a', mid: '#b45309', dark: '#2b1606', crater: 'rgba(43,22,6,0.5)', glow: '251,146,60', trail: ['#fef3c7', '#fb923c', '#dc2626'] },
+  mc:      { light: '#d6d3d1', mid: '#57534e', dark: '#1c1917', crater: 'rgba(0,0,0,0.45)', glow: '134,239,172', trail: ['#ffffff', '#86efac', '#22c55e'] }
 };
-function spawnAsteroid() {
+// Цвета астероида для любой планеты. Раньше их не было у Венеры и Меркурия: рисование падало посреди кадра,
+// астероид становился невидимым, а таймер замирал (полёт и удар считались в том же месте, что и рисование).
+// Теперь полёт (stepAsteroid) отделён от рисования (drawAsteroid), а цвета есть у всех планет.
+function asteroidTint(pid) { return ASTEROID_TINTS[pid] || ASTEROID_TINTS[uniOf(pid)] || ASTEROID_TINTS.earth; }
+function spawnAsteroid(forceGolden) {
   if (activeAsteroid || !playing) return;
-  const golden = Math.random() < GOLDEN_CHANCE;
+  const golden = forceGolden || Math.random() < GOLDEN_CHANCE + perk('ast_magnet') * 0.03;
   const hp = clickGain() * (golden ? 18 : 14);
   const fromLeft = Math.random() > 0.5;
-  const sx = fromLeft ? 52 : cw - 52, sy = 108;   // ниже кнопок «Квесты» и «Магазин»
+  // вылетает правее/левее боковых кнопок (под кнопкой «Квесты» по астероиду было не попасть)
+  const side = Math.min(112, cw * 0.29);
+  const sx = fromLeft ? side : cw - side, sy = Math.max(112, ($('hud').offsetHeight || 96) + 66);   // и ниже баннера «Астероид!»
   activeAsteroid = {
     sx, sy, x: sx, y: sy, px: sx, py: sy,
     // контрольная точка кривой — полёт по дуге
@@ -2523,9 +3252,11 @@ function spawnAsteroid() {
     hp, maxHp: hp, golden, pts: rockShape(), hitFx: 0, wob: 0,
     craters: [[-0.35, -0.2, 0.22], [0.3, 0.25, 0.17], [0.1, -0.45, 0.13], [-0.15, 0.4, 0.12]],
     cracks: [rockShape(5, 0.6), rockShape(5, 0.6)],
-    gems: (1 + Math.floor(ps(cur()).era / 3) + PLANET_ORDER.indexOf(cur())) * (golden ? 3 : 1),
+    gems: Math.round((1 + Math.floor(ps(cur()).era / 3) + UNIVERSES[uniOf(cur())].planets.indexOf(cur()) + UNIVERSE_ORDER.indexOf(uniOf(cur())) * 3) * (golden ? 3 : 1) * gemMult()),
     progress: 0, totalTime: BOSS_FLIGHT
   };
+  astStepAt = performance.now();
+  $('bossTimerText').textContent = `${BOSS_FLIGHT.toFixed(1)}с`;
   $('bossAlertBanner').classList.toggle('golden', golden);
   $('bossAlertText').innerText = golden ? '✨ ЗОЛОТОЙ АСТЕРОИД! ЖМИ!' : '☄️ АСТЕРОИД! ЖМИ НА НЕГО!';
   $('bossAlertBanner').style.display = 'flex';
@@ -2533,16 +3264,27 @@ function spawnAsteroid() {
   Sound.alarm();
 }
 
-function updateAndDrawAsteroid(dt, f, now) {
+// Шаг полёта: позиция, таймер на баннере, удар о планету. Зовётся из кадра, а если кадры не идут
+// (вкладка видна, но рисование застряло) — из главного цикла раз в 100 мс.
+let astStepAt = 0;
+function stepAsteroid(dt) {
   const a = activeAsteroid;
+  if (!a) return;
+  astStepAt = performance.now();
   a.progress += dt / a.totalTime;
   const t = Math.min(1, a.progress), it = 1 - t;
   a.px = a.x; a.py = a.y;
   a.x = it * it * a.sx + 2 * it * t * a.kx + t * t * cx;
   a.y = it * it * a.sy + 2 * it * t * a.ky + t * t * cy;
+  const left = `${Math.max(0, a.totalTime * (1 - a.progress)).toFixed(1)}с`;
+  const tt = $('bossTimerText'); if (tt.textContent !== left) tt.textContent = left;
+  if (a.progress >= 1.0) asteroidImpact();
+}
+function drawAsteroid(f, now) {
+  const a = activeAsteroid;
   a.rot += a.spin * f;
   a.hitFx = Math.max(0, a.hitFx - 0.08 * f);
-  const T = a.golden ? { light: '#fef9c3', mid: '#eab308', dark: '#713f12', crater: 'rgba(113,63,18,0.45)', glow: '250,204,21', trail: ['#ffffff', '#fde047', '#f59e0b'] } : ASTEROID_TINTS[cur()];
+  const T = a.golden ? { light: '#fef9c3', mid: '#eab308', dark: '#713f12', crater: 'rgba(113,63,18,0.45)', glow: '250,204,21', trail: ['#ffffff', '#fde047', '#f59e0b'] } : asteroidTint(cur());
 
   // огненный хвост
   const vx = a.x - a.px, vy = a.y - a.py, vl = Math.hypot(vx, vy) || 1;
@@ -2600,9 +3342,6 @@ function updateAndDrawAsteroid(dt, f, now) {
   hg.addColorStop(0, a.golden ? '#fde047' : '#fb7185'); hg.addColorStop(1, a.golden ? '#f59e0b' : '#e11d48');
   ctx.fillStyle = hg;
   ctx.beginPath(); ctx.roundRect ? ctx.roundRect(bx, by, bw * Math.max(0, a.hp / a.maxHp), bh, 3) : ctx.rect(bx, by, bw * Math.max(0, a.hp / a.maxHp), bh); ctx.fill();
-
-  $('bossTimerText').innerText = `${Math.max(0, a.totalTime * (1 - a.progress)).toFixed(1)}с`;
-  if (a.progress >= 1.0) asteroidImpact();
 }
 
 function asteroidImpact() {
@@ -2631,7 +3370,7 @@ function damageAsteroid(isAuto) {
 function destroyAsteroid() {
   const a = activeAsteroid;
   const pid = cur();
-  const T = a.golden ? '#fde047' : ASTEROID_TINTS[pid].mid;
+  const T = a.golden ? '#fde047' : asteroidTint(pid).mid;
   // осколки
   for (let i = 0; i < 12; i++) {
     const ang = Math.random() * Math.PI * 2, sp = 1.5 + Math.random() * 4;
@@ -2693,20 +3432,37 @@ function showFloat(x, y, text, cls) {
   setTimeout(() => el.remove(), 800);
 }
 
+function tapSoundStyle() { const c = COSMETICS.find(x => x.id === state.tapSound); return c ? c.snd : 'default'; }
 function handlePlanetClick(mx, my) {
   const pid = cur();
+  const now = performance.now();
+  combo.n = now - combo.at < COMBO_GAP_MS ? combo.n + 1 : 1;
+  combo.at = now;
+  if (combo.n > (state.stats.combo || 0)) state.stats.combo = Math.min(9999, combo.n);
   const crit = rollCrit();
-  const gain = clickGain(pid) * crit;
+  const gain = Math.ceil(clickGain(pid) * crit * comboMult());
   const res = PL(pid).clickRes;
   ps(pid).res[res] += gain;
   pulseScale = 0.94;
   ripples.push({ x: mx, y: my, r: 6, life: 1, color: crit > 1 ? '#fb7185' : '#7dd3fc' });
   spawnParticles(mx, my, crit > 1 ? '#fb7185' : PL(pid).eras[ps(pid).era].halo, crit > 1 ? 12 : 5);
   if (crit > 1) vibrate(20);
-  Sound.tap(crit > 1);
+  Sound.tap(crit > 1, tapSoundStyle(), combo.n);
   showFloat(mx - 24, my - 28, `+${fmt(gain)} ${RES[res].icon}${crit > 1 ? ' КРИТ!' : ''}`, crit > 1 ? 'crit' : '');
+  showCombo();
   stat('taps');
+  tutEvent('tap');
   refreshUI();
+}
+// счётчик серии над планетой (только с перком «Комбо-тапы»)
+let comboHideT = null;
+function showCombo() {
+  const el = $('comboBadge');
+  if (!el || !perk('combo') || combo.n < 5) return;
+  el.textContent = `🔥 ×${Math.min(combo.n, COMBO_MAX)}${combo.n >= COMBO_MAX ? ' MAX' : ''} · +${Math.round((comboMult() - 1) * 100)}%`;
+  el.classList.add('show'); el.classList.toggle('max', combo.n >= COMBO_MAX);
+  clearTimeout(comboHideT);
+  comboHideT = setTimeout(() => el.classList.remove('show'), COMBO_GAP_MS + 150);
 }
 
 function markBought(sel, text) {
@@ -2738,10 +3494,11 @@ function buyBuilding(id) {
   stat('built', n);
   vibrate(n > 1 ? 18 : 8); Sound.buy();
   if (n > 1) spawnParticles(cx, cy, PL(pid).eras[ps(pid).era].halo, Math.min(30, 6 + n / 4), 4, 3);
-  renderAll();
+  refreshUI();   // карточки обновляются на месте — кнопку можно жать снова сразу, без перестройки панели
   markBought(`[data-card="${id}"]`, '+' + n);
   saveLocal();
   if (!syncTimer) queueSync(5000);   // постройки считаются в топе планеты
+  tutEvent('build');
 }
 function setBuyMode(m) {
   m = m === 'max' ? 'max' : (BUY_MODES.includes(+m) ? +m : 1);
@@ -2804,11 +3561,20 @@ function evolveEra() {
     big: String(era + 1), title: E.name, desc: E.desc, color: E.halo,
     chips: unlocks.map(b => `${b.icon} ${b.name}`),
     extra: (pid === 'earth' && PLANETS.mars.unlock.earthEra === era && !isUnlocked('mars')) ? '🚀 Открыта экспедиция на Марс — загляните на карту!'
-         : (!couldPrestige && canPrestige(pid)) ? `🌀 Цели престижа выполнены — раздел «Престиж» (${PL(pid).name})` : ''
+         : (!couldPrestige && canPrestige(pid)) ? `🌀 Цели престижа выполнены — вкладка «Развитие» (${PL(pid).name})`
+         : nextUnlockHint(pid, era)
   });
   renderAll(); saveLocal(); queueSync(800);
 }
 
+// подсказка после эволюции: новый этап открыл экспедицию на следующую планету измерения или чёрную дыру
+function nextUnlockHint(pid, era) {
+  const next = PLANET_ORDER.find(x => PL(x).unlock && PL(x).unlock.stages && PL(x).unlock.stages[pid] === era && !isUnlocked(x));
+  if (next) return `🚀 Можно снарядить экспедицию: ${PL(next).icon} ${PL(next).name} — загляните на карту!`;
+  const nu = UNIVERSE_ORDER.find(u => UNIVERSES[u].need && UNIVERSES[u].need.from === uniOf(pid) && !state.unis.includes(u));
+  if (nu && era === PL(pid).eras.length - 1) return `🕳️ Планета пройдена! Цели для перехода: ${UNIVERSES[nu].name} — на карте`;
+  return '';
+}
 async function performPrestige() {
   const pid = cur(), info = prestigeInfo(pid), P = PL(pid);
   if (!info.ready) return;
@@ -2838,12 +3604,33 @@ async function performPrestige() {
   onPlanetChanged(); saveLocal(); queueSync(500);
 }
 
+// предмет куплен (звук по умолчанию есть у всех)
+const ownsItem = (id) => id === DEFAULT_TAP_SOUND || state.ownedCosmetics.includes(id);
+// почему предмет пока нельзя купить (закрыта планета или измерение) — или '' если можно
+function itemLock(item) {
+  if (item.planet && !isUnlocked(item.planet)) return `🔒 ${PL(item.planet).name}`;
+  const u = item.uni || item.uniNeed;
+  if (u && !state.unis.includes(u)) return `🔒 ${UNIVERSES[u].short}`;
+  return '';
+}
 function handleCosmetic(id) {
   const item = COSMETICS.find(x => x.id === id);
   if (!item) return;
   const pid = cur();
+  if (item.type === 'sound') {   // звук тапа — общий для всех планет
+    if (!ownsItem(id)) {
+      if (itemLock(item) || !canPay(item.cost)) { Sound.error(); return; }
+      pay(item.cost);
+      state.ownedCosmetics.push(id);
+      showToast(`${item.icon} Звук «${item.name}» — ваш!`, 2200);
+    }
+    state.tapSound = id;
+    Sound.tap(false, item.snd, 1); setTimeout(() => Sound.tap(false, item.snd, 2), 160); setTimeout(() => Sound.tap(true, item.snd, 3), 320);
+    renderShop(); renderAll(); saveLocal(); queueSync();
+    return;
+  }
   if (!state.ownedCosmetics.includes(id)) {
-    if (item.code || item.chest || (item.planet && !isUnlocked(item.planet))) { Sound.error(); return; }
+    if (item.code || item.chest || itemLock(item)) { Sound.error(); return; }
     if (!canPay(item.cost)) { Sound.error(); return; }
     pay(item.cost);
     state.ownedCosmetics.push(id);
@@ -2911,7 +3698,10 @@ function achValue(a) {
   if (a.kind === 'planet') return isUnlocked(a.key) ? 1 : 0;
   if (a.kind === 'style') return state.ownedCosmetics.length;
   if (a.kind === 'hours') return Math.floor((state.stats.playSec || 0) / 3600);
-  if (a.kind === 'allmax') return planetsMaxedCount();
+  if (a.kind === 'allmax') return planetsMaxedCount('sol');
+  if (a.kind === 'uniall') return planetsMaxedCount(a.key);
+  if (a.kind === 'uni') return state.unis.includes(a.key) ? 1 : 0;
+  if (a.kind === 'sounds') return state.ownedCosmetics.filter(id => id.startsWith('snd_')).length;
   return 0;
 }
 function questState() {
@@ -2992,14 +3782,22 @@ function openShop() {
   $('shopOverlay').classList.add('open');
   Sound.ui();
 }
+// сундуки текущего измерения и редкие образы из них
+const chestUni = (c) => c.uni || 'sol';
+const chestPool = (u) => COSMETICS.filter(x => x.chest && (x.uni || 'sol') === u);
 function renderShop() {
   $('shopSapph').textContent = fmt(state.sapphires);
   const left = boostLeft();
   $('shopBoost').hidden = !left;
   if (left) $('shopBoost').textContent = `⚡ Ускоритель ×2 активен: ещё ${fmtCountdown(left / 1000)}`;
-  const chestItems = COSMETICS.filter(c => c.chest);
+  document.querySelectorAll('#shopTabs .seg-btn').forEach(b => b.classList.toggle('active', b.dataset.id === ui.storeTab));
+  const chestsMode = ui.storeTab !== 'sounds';
+  $('chestList').hidden = !chestsMode; $('chestNote').hidden = !chestsMode; $('soundList').hidden = chestsMode;
+  if (!chestsMode) { renderSoundShop(); return; }
+  const u = uniOf(cur()), U = UNIVERSES[u];
+  const chestItems = chestPool(u);
   const owned = chestItems.filter(c => state.ownedCosmetics.includes(c.id)).length;
-  $('chestList').innerHTML = CHESTS.map((c, i) => `
+  $('chestList').innerHTML = (u !== 'sol' ? `<div class="shop-uni">${U.icon} ${U.name}: свои сундуки и редкие образы</div>` : '') + CHESTS.filter(c => chestUni(c) === u).map((c, i) => `
     <div class="chest-card" style="--c:${c.color};--i:${i}">
       <div class="chest-ico">${c.icon}</div>
       <div class="chest-info">
@@ -3009,20 +3807,35 @@ function renderShop() {
       </div>
       <button class="chest-buy" data-chest="${c.id}" type="button" ${state.sapphires >= c.price ? '' : 'disabled'}>Открыть<span>${c.price} 🔷</span></button>
     </div>`).join('');
-  $('chestNote').textContent = `Редкие образы из сундуков: собрано ${owned} из ${chestItems.length}`;
+  $('chestNote').textContent = `Редкие образы ${u === 'sol' ? 'из сундуков' : '«' + U.short + '»'}: собрано ${owned} из ${chestItems.length}`;
+}
+// Звуки тапа: прослушать, купить за сапфиры, выбрать
+function renderSoundShop() {
+  const items = COSMETICS.filter(c => c.type === 'sound');
+  $('soundList').innerHTML = `<div class="shop-uni">🔊 Звук тапа по планете — общий для всех планет</div>` + items.map((it, i) => {
+    const owned = ownsItem(it.id), on = state.tapSound === it.id, lock = itemLock(it);
+    const btn = owned
+      ? `<button class="chest-buy ${on ? 'on' : ''}" data-snd="${it.id}" type="button">${on ? '✓ Выбран' : 'Выбрать'}</button>`
+      : lock ? `<button class="chest-buy" type="button" disabled>${lock}</button>`
+      : `<button class="chest-buy" data-snd="${it.id}" type="button" ${canPay(it.cost) ? '' : 'disabled'}>Купить<span>${costChips(it.cost)}</span></button>`;
+    return `<div class="chest-card snd-card ${on ? 'on' : ''}" style="--c:${on ? '#34d399' : '#60a5fa'};--i:${i}">
+      <button class="snd-play" data-play="${it.snd}" type="button" aria-label="Прослушать">${it.icon}<i>▶</i></button>
+      <div class="chest-info"><div class="chest-name">${it.name}</div><div class="chest-desc">${it.desc}</div></div>${btn}</div>`;
+  }).join('');
 }
 const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
 // Содержимое сундука: кристаллы, ресурсы текущей планеты (доход за N минут), ускоритель ×2, редкий образ
 function rollChest(c) {
-  const pid = cur(), r = rates(pid), out = { gems: randInt(c.gems[0], c.gems[1]), res: {}, boostMin: 0, item: null };
+  const pid = cur(), r = rates(pid), out = { gems: Math.round(randInt(c.gems[0], c.gems[1]) * gemMult()), res: {}, boostMin: 0, item: null };
+  const luck = perk('chest_luck');
   PL(pid).res.forEach(k => {
-    let v = (r[k] || 0) * 60 * c.resMin;
+    let v = (r[k] || 0) * 60 * c.resMin * (1 + luck * 0.25);
     if (k === PL(pid).clickRes) v = Math.max(v, clickGain(pid) * 3 * 60 * c.resMin);
     if (v >= 1) out.res[k] = Math.floor(v);
   });
   if (Math.random() < c.boostChance) out.boostMin = c.boostMin;
-  if (Math.random() < c.itemChance) {
-    const pool = COSMETICS.filter(x => x.chest && !state.ownedCosmetics.includes(x.id));
+  if (Math.random() < c.itemChance + luck * 0.05) {
+    const pool = chestPool(chestUni(c)).filter(x => !state.ownedCosmetics.includes(x.id));
     if (pool.length) out.item = pool[Math.floor(Math.random() * pool.length)].id;
     else out.gems += Math.round(c.price * 0.6);   // всё собрано — компенсация кристаллами
   }
@@ -3121,7 +3934,7 @@ function travelTo(pid, firstTime) {
   if (pid === cur() && !firstTime) { closeMap(); return; }
   traveling = true;
   const tv = $('travel');
-  $('travelText').textContent = `Курс на ${({ earth: 'Землю', venus: 'Венеру' })[pid] || PL(pid).name}…`;
+  $('travelText').textContent = `Курс на ${({ earth: 'Землю', venus: 'Венеру' })[pid] || PL(pid).acc || PL(pid).name}…`;
   $('travelIcon').textContent = PL(pid).icon;
   tv.classList.remove('open'); void tv.offsetWidth;
   tv.classList.add('open');
@@ -3148,71 +3961,153 @@ function travelTo(pid, firstTime) {
 }
 
 // ============================================================
-//  КАРТА СОЛНЕЧНОЙ СИСТЕМЫ
+//  КАРТА: ИЗМЕРЕНИЯ И ПЛАНЕТЫ
 // ============================================================
-const MAP_ORBITS = [
-  { id: 'mercury', r: 13, size: 3.6, dur: 40,  color: 'radial-gradient(circle at 35% 30%, #e7e5e4, #78716c 55%, #292524)' },
-  { id: 'venus',   r: 20, size: 4.8, dur: 70,  color: 'radial-gradient(circle at 35% 30%, #fef9c3, #facc15 45%, #a16207)' },
-  { id: 'earth',   r: 28, size: 6,   dur: 110, color: 'radial-gradient(circle at 35% 30%, #7dd3fc 0 20%, #16a34a 21% 32%, #0369a1 33% 60%, #082f49)' },
-  { id: 'mars',    r: 36, size: 5,   dur: 170, color: 'radial-gradient(circle at 35% 30%, #fdba74, #c2410c 60%, #431407)' },
-  { id: 'belt',    r: 42, belt: true },
-  { id: 'jupiter', r: 48, size: 10,  dur: 300, color: 'linear-gradient(180deg, #fef3c7 0 14%, #d97706 14% 26%, #fde68a 26% 40%, #b45309 40% 52%, #fef3c7 52% 66%, #c2410c 66% 78%, #fcd34d 78%)' }
-];
-function buildMap() {
+const MAP_ORBITS = {
+  sol: [
+    { id: 'mercury', r: 13, size: 3.6, dur: 40,  color: 'radial-gradient(circle at 35% 30%, #e7e5e4, #78716c 55%, #292524)' },
+    { id: 'venus',   r: 20, size: 4.8, dur: 70,  color: 'radial-gradient(circle at 35% 30%, #fef9c3, #facc15 45%, #a16207)' },
+    { id: 'earth',   r: 28, size: 6,   dur: 110, color: 'radial-gradient(circle at 35% 30%, #7dd3fc 0 20%, #16a34a 21% 32%, #0369a1 33% 60%, #082f49)' },
+    { id: 'mars',    r: 36, size: 5,   dur: 170, color: 'radial-gradient(circle at 35% 30%, #fdba74, #c2410c 60%, #431407)' },
+    { id: 'belt',    r: 42, belt: true },
+    { id: 'jupiter', r: 48, size: 10,  dur: 300, color: 'linear-gradient(180deg, #fef3c7 0 14%, #d97706 14% 26%, #fde68a 26% 40%, #b45309 40% 52%, #fef3c7 52% 66%, #c2410c 66% 78%, #fcd34d 78%)' }
+  ],
+  cs: UNIVERSES.cs.planets.map((id, i) => ({ id, r: 14 + i * 8, size: 4.6 + (i % 2) * 1.4, dur: 60 + i * 45, color: PLANETS[id].mapColor })),
+  mc: UNIVERSES.mc.planets.map((id, i) => ({ id, r: 14 + i * 8, size: 4.8 + (i % 3) * 1.1, dur: 70 + i * 50, color: PLANETS[id].mapColor, cube: true }))
+};
+let mapBuiltFor = '';
+function buildMap(u = 'sol') {
+  mapBuiltFor = u;
   const sys = $('system');
-  let html = '<div class="sun"></div>';
-  MAP_ORBITS.forEach((o, i) => {
+  sys.dataset.uni = u;
+  if (u !== 'sol' && !state.unis.includes(u)) {   // измерение закрыто — на карте чёрная дыра
+    sys.innerHTML = `<div class="hole-map"><div class="hm-disk"></div><div class="hm-core"></div><div class="hm-ico">${UNIVERSES[u].icon}</div></div>`;
+    return;
+  }
+  let html = `<div class="sun ${u}"></div>`;
+  MAP_ORBITS[u].forEach((o, i) => {
     if (o.belt) { html += `<div class="orbit belt" style="--r:${o.r}"></div>`; return; }
     const start = -((i * 137) % 360) / 360 * o.dur;
     html += `<div class="orbit" style="--r:${o.r}"></div>
       <div class="arm" style="--r:${o.r};--dur:${o.dur}s;animation-delay:${start}s">
-        ${o.decor
-          ? `<span class="pl decor" style="--s:${o.size};background:${o.color};--dur:${o.dur}s;animation-delay:${start}s"></span>`
-          : `<button class="pl" type="button" data-planet="${o.id}" style="--s:${o.size};--dur:${o.dur}s;animation-delay:${start}s"><span class="pl-ball" style="background:${o.color}"></span><span class="pl-lock">🔒</span><span class="pl-name">${PL(o.id).name}</span></button>`}
+        <button class="pl ${o.cube ? 'cube' : ''}" type="button" data-planet="${o.id}" style="--s:${o.size};--dur:${o.dur}s;animation-delay:${start}s"><span class="pl-ball" style="background:${o.color}"></span><span class="pl-lock">🔒</span><span class="pl-name">${PL(o.id).name}</span></button>
       </div>`;
   });
   sys.innerHTML = html;
 }
 function openMap() {
   if (!playing) return;
-  ui.mapSel = ui.mapSel || cur();
+  ui.mapUni = uniOf(cur());
+  ui.mapSel = cur();
   renderMap();
   $('mapOverlay').classList.add('open');
   Sound.ui();
+  tutEvent('map');
 }
 function closeMap() { $('mapOverlay').classList.remove('open'); }
+function setMapUni(u) {
+  if (!UNIVERSES[u] || ui.mapUni === u) return;
+  ui.mapUni = u;
+  ui.mapSel = UNIVERSES[u].planets.includes(cur()) ? cur() : UNIVERSES[u].planets[0];
+  Sound.ui();
+  renderMap();
+}
 // подпись состояния карты: перерисовываем, только когда что-то реально изменилось
 function mapSig() {
-  return state.unlocked.join() + ui.mapSel + cur() + costSig(unlockInfo(ui.mapSel).cost || {})
+  const u = ui.mapUni;
+  if (u !== 'sol' && !state.unis.includes(u)) return u + universeInfo(u).reqs.map(r => r.ok ? 1 : 0).join('') + Math.floor(state.gems);
+  return u + state.unlocked.join() + state.unis.join() + ui.mapSel + cur() + costSig(unlockInfo(ui.mapSel).cost || {})
     + Object.values(rates(ui.mapSel)).map(v => Math.round(v)).join() + ps(ui.mapSel).era;
 }
 function renderMap() {
   renderMap.sig = mapSig();
+  const u = ui.mapUni, U = UNIVERSES[u], open = state.unis.includes(u);
+  if (mapBuiltFor !== u + (open ? '' : '!')) { buildMap(u); mapBuiltFor = u + (open ? '' : '!'); }
+  $('mapTitle').textContent = `${U.icon} ${U.title}`;
+  $('mapSub').textContent = open ? U.mapSub : 'Измерение закрыто — выполните цели и пройдите через чёрную дыру';
+  $('uniTabs').innerHTML = UNIVERSE_ORDER.map(x => `<button class="uni-tab ${x === u ? 'sel' : ''} ${state.unis.includes(x) ? '' : 'locked'}" data-uni="${x}" type="button" style="--uc:${UNIVERSES[x].color}">
+    <span>${state.unis.includes(x) ? UNIVERSES[x].icon : '🕳️'}</span><span>${UNIVERSES[x].short}</span></button>`).join('');
+  if (!open) {
+    const info = universeInfo(u);
+    $('planetChips').innerHTML = '';
+    $('planetInfo').innerHTML = `<div class="pi-head"><div class="pi-icon">🕳️</div><div><div class="pi-name">${U.hole}</div><div class="pi-sub">${esc(U.arrive)}</div></div></div>
+      <div class="pi-reqs">${info.reqs.map(q => `<div class="req ${q.ok ? 'ok' : ''}"><span>${q.ok ? '✅' : '⬜'} ${esc(q.label)}</span>${q.have ? `<b>${esc(q.have)}</b>` : ''}</div>`).join('')}</div>
+      <div class="pi-bonus">Бонус: +${Math.round(UNIVERSE_BONUS * 100)}% к доходу всех планет во всех измерениях</div>
+      <button class="btn-main hole-btn" data-action="universe" data-id="${u}" type="button" ${info.ready ? '' : 'disabled'}>🕳️ Войти в чёрную дыру (${info.gems} 💎)</button>`;
+    return;
+  }
   document.querySelectorAll('#system .pl[data-planet]').forEach(b => {
     const pid = b.dataset.planet;
     b.classList.toggle('locked', !isUnlocked(pid));
     b.classList.toggle('here', pid === cur());
     b.classList.toggle('sel', pid === ui.mapSel);
   });
-  $('planetChips').innerHTML = PLANET_ORDER.map(pid => `
+  $('planetChips').innerHTML = U.planets.map(pid => `
     <button class="pchip-btn ${pid === ui.mapSel ? 'sel' : ''} ${isUnlocked(pid) ? '' : 'locked'}" data-planet="${pid}" type="button">
       <span>${isUnlocked(pid) ? PL(pid).icon : '🔒'}</span><span>${PL(pid).name}</span>
     </button>`).join('');
-  const pid = ui.mapSel, P = PL(pid);
+  const pid = U.planets.includes(ui.mapSel) ? ui.mapSel : U.planets[0], P = PL(pid);
+  ui.mapSel = pid;
   let html = `<div class="pi-head"><div class="pi-icon">${P.icon}</div><div><div class="pi-name">${P.name}</div>`;
   if (isUnlocked(pid)) {
     const r = rates(pid);
-    html += `<div class="pi-sub">${stageLabel(pid)} · ${P.eras[ps(pid).era].name}</div></div></div>
+    html += `<div class="pi-sub">${stageLabel(pid)} · ${P.eras[ps(pid).era].name}${prestigeCount(pid) ? ' · 🌀' + prestigeCount(pid) : ''}</div></div></div>
       <div class="pi-rates">${P.res.map(k => `<span class="chip ok">${r[k] > 0 ? '+' + fmtRate(r[k]) : '0'} ${RES[k].icon}/с</span>`).join('')}</div>
       ${pid === cur() ? '<div class="pi-here">📍 Вы здесь</div>' : `<button class="btn-main" data-action="travel" data-id="${pid}" type="button">🚀 Перелететь</button>`}`;
   } else {
     const info = unlockInfo(pid);
     html += `<div class="pi-sub">Не исследована</div></div></div>
-      <div class="pi-reqs">${info.reqs.map(q => `<div class="req ${q.ok ? 'ok' : ''}">${q.ok ? '✅' : '⬜'} ${esc(q.label)}</div>`).join('')}</div>
-      <div class="pi-cost"><span class="pi-cost-lbl">Экспедиция:</span>${costChips(info.cost)}</div>
+      <div class="pi-reqs">${info.reqs.map(q => `<div class="req ${q.ok ? 'ok' : ''}"><span>${q.ok ? '✅' : '⬜'} ${esc(q.label)}</span></div>`).join('')}</div>
+      ${info.cost && Object.keys(info.cost).length ? `<div class="pi-cost"><span class="pi-cost-lbl">Экспедиция:</span>${costChips(info.cost)}</div>` : ''}
       <button class="btn-main" data-action="expedition" data-id="${pid}" type="button" ${info.ready ? '' : 'disabled'}>🛰️ Снарядить экспедицию</button>`;
   }
+  // следующее измерение: напоминание о чёрной дыре
+  const nu = UNIVERSE_ORDER.find(x => UNIVERSES[x].need && UNIVERSES[x].need.from === u && !state.unis.includes(x));
+  if (nu) {
+    const inf = universeInfo(nu), done = inf.reqs.filter(r => r.ok).length;
+    html += `<button class="hole-teaser ${inf.ready ? 'ready' : ''}" data-uni="${nu}" type="button"><span class="ht-ico">🕳️</span><span class="ht-txt"><b>${UNIVERSES[nu].hole}</b><i>${inf.ready ? 'Всё готово — можно входить!' : `Цели: ${done} из ${inf.reqs.length}`}</i></span><span>›</span></button>`;
+  }
   $('planetInfo').innerHTML = html;
+}
+
+// ---------- Чёрная дыра: переход в новое измерение ----------
+let holeBusy = false;
+function enterUniverse(u) {
+  const info = universeInfo(u);
+  if (holeBusy || info.open || !info.ready) { Sound.error(); return; }
+  state.gems -= info.gems;
+  state.unis.push(u);
+  const first = UNIVERSES[u].planets[0];
+  if (!isUnlocked(first)) state.unlocked.push(first);
+  saveLocal(); queueSync(500);
+  closeMap();
+  playBlackHole(u, () => {
+    state.planet = first;
+    endAsteroid(true);
+    onPlanetChanged();
+    pulseScale = 0.5;
+    Sound.setUniverse(u);
+    saveLocal();
+  }, () => {
+    const E = PL(first).eras[0];
+    showCinema({ kicker: 'Новое измерение', big: UNIVERSES[u].icon, title: UNIVERSES[u].name, desc: UNIVERSES[u].arrive, color: UNIVERSES[u].color,
+      chips: [`${PL(first).icon} ${PL(first).name}`, `🧰 Новые сундуки`, `🎩 Новые образы`, `🏆 Топ престижей «${UNIVERSES[u].short}»`],
+      extra: `+${Math.round(UNIVERSE_BONUS * 100)}% к доходу всех планет! Первая планета: ${PL(first).name} — «${E.name}».` });
+  });
+}
+// анимация: экран засасывает в воронку с огненным диском, звёзды растягиваются, вспышка — и новое измерение
+function playBlackHole(u, onMid, onEnd) {
+  holeBusy = true;
+  const el = $('blackhole');
+  $('bhText').textContent = `Переход: ${UNIVERSES[u].name}`;
+  $('bhIcon').textContent = UNIVERSES[u].icon;
+  el.style.setProperty('--uc', UNIVERSES[u].color);
+  el.classList.remove('open'); void el.offsetWidth;
+  el.classList.add('open');
+  Sound.blackhole();
+  vibrate([60, 80, 120, 80, 200]);
+  setTimeout(onMid, 2100);
+  setTimeout(() => { el.classList.remove('open'); holeBusy = false; onEnd && onEnd(); }, 3600);
 }
 
 // ============================================================
@@ -3229,14 +4124,23 @@ function panelSig() {
   if (!t) return '';
   const base = pid + ps(pid).era + t;
   if (t === 'social') return base + socialVer;
-  if (t === 'perks') return base + state.gems + GLOBAL_PERKS.map(p => perk(p.id)).join() + PL(pid).perks.map(p => ppk(pid, p.id)).join();
+  if (t === 'chat') return 'chat' + ui.chatTab + (ui.chatWith || '') + chatShellVer;
+  if (t === 'dev') return base + Math.floor(state.gems) + GLOBAL_PERKS.map(p => perk(p.id)).join() + PL(pid).perks.map(p => ppk(pid, p.id)).join()
+    + prestigeInfo(pid).goals.map(g => g.ok ? 1 : (g.kind === 'stage' ? 0 : Math.floor(g.have / g.goal * 20))).join('') + prestigeCount(pid) + state.unlocked.join();
   if (t === 'top') { const l = myLocalEntry(ui.lbBoard, ui.lbPeriod); return base + lbVer + ui.lbBoard + ui.lbPeriod + (myProfile ? myProfile.rank + ':' + myProfile.score : '') + totalPrestige() + (l ? ':' + l.score : ''); }
-  if (t === 'rebirth') return base + prestigeInfo(pid).goals.map(g => g.ok ? 1 : (g.kind === 'stage' ? 0 : Math.floor(g.have / g.goal * 20))).join('') + prestigeCount(pid) + state.unlocked.join();
-  if (t === 'shop') return base + ui.shopTab + COSMETICS.map(c => state.ownedCosmetics.includes(c.id) ? 'o' : (c.code || c.chest) ? 'c' : costSig(c.cost)).join('') + state.unlocked.join();
-  return base + ui.buyMode + PL(pid).buildings.map(b => b.u <= ps(pid).era
-    ? (ui.buyMode === 'max' ? maxAffordable(pid, b) : costSig(bulkCost(pid, b, ui.buyMode))) : 'x').join('|');
+  if (t === 'shop') return base + ui.shopTab + COSMETICS.map(c => state.ownedCosmetics.includes(c.id) ? 'o' : (c.code || c.chest) ? 'c' : costSig(c.cost || {})).join('') + state.unlocked.join() + state.unis.join();
+  return buildStructSig();
 }
-function refreshUI() { renderHeaderAndEra(); if (ui.tab && panelSig() !== lastPanelSig) renderPanel(); updateQuestBadge(); }
+// Вкладка «Постройки» перестраивается целиком, только когда меняется набор карточек (этап, режим покупки, престиж).
+// Всё остальное — цены, «×N» в режиме MAX, доступность кнопки, цели престижа — обновляется на месте:
+// раньше панель пересобиралась ~10 раз в секунду, и нажатие на кнопку терялось (задержка в режиме MAX).
+function buildStructSig() { const pid = cur(); return 'build' + pid + ps(pid).era + ui.buyMode + prestigeCount(pid); }
+function refreshUI() {
+  renderHeaderAndEra();
+  if (ui.tab === 'build' && lastPanelSig === buildStructSig()) patchBuildPanel();
+  else if (ui.tab && panelSig() !== lastPanelSig) renderPanel();
+  updateQuestBadge();
+}
 
 function buildResourceBar() {
   $('resourcesBar').innerHTML = PL(cur()).res.map(k =>
@@ -3272,6 +4176,8 @@ function onPlanetChanged() {
   applyBodyBg();
   document.body.dataset.planet = cur();
   $('mapBtnIcon').textContent = PL(cur()).icon;
+  document.body.dataset.uni = uniOf(cur());
+  Sound.setUniverse(uniOf(cur()));
   renderAll();
   animatePanel();
 }
@@ -3295,9 +4201,10 @@ function renderHeaderAndEra() {
   $('astText').innerText = activeAsteroid ? 'Бой!' : playing ? fmtCountdown(bossCooldown) : '—';
   $('astPill').classList.toggle('alert', !!activeAsteroid);
   // подсказки на кнопках меню: престиж готов, есть на что улучшить
-  $('dotRebirth').hidden = !canPrestige(pid);
-  $('dotPerks').hidden = !(GLOBAL_PERKS.some(p => perk(p.id) < p.max && state.gems >= perkCost(p, perk(p.id)))
-    || P.perks.some(p => ppk(pid, p.id) < p.max && state.gems >= perkCost(p, ppk(pid, p.id))));
+  const devDot = canPrestige(pid) || GLOBAL_PERKS.some(p => perk(p.id) < p.max && state.gems >= perkCost(p, perk(p.id)))
+    || P.perks.some(p => ppk(pid, p.id) < p.max && state.gems >= perkCost(p, ppk(pid, p.id)));
+  if ($('dotDev').hidden === devDot) $('dotDev').hidden = !devDot;
+  $('dotDev').classList.toggle('pr', canPrestige(pid));
 
   const E = P.eras[st.era], N = P.eras[st.era + 1];
   $('eraTitle').innerHTML = `<span class="era-num" style="--halo:${E.halo}">${stageLabel(pid)}</span> ${esc(E.name)}`;
@@ -3329,14 +4236,59 @@ function buildingCard(pid, b, mult, i) {
     <div class="card ${afford ? 'affordable' : ''}" data-card="${b.id}" style="--i:${i}">
       <div class="icon-tile t-${b.tab}">${b.icon}</div>
       <div class="card-info">
-        <div class="card-title"><span>${b.name}</span>${count ? `<span class="card-count">×${count}</span>` : ''}</div>
+        <div class="card-title"><span>${b.name}</span><span class="card-count" ${count ? '' : 'hidden'}>×${count}</span></div>
         <div class="card-desc">${b.desc}</div>
         <div class="card-prod">${prod}</div>
       </div>
       <button class="btn-buy" data-action="build" data-id="${b.id}" type="button" ${afford ? '' : 'disabled'}>
-        <span>Построить${n > 1 ? ` <b class="buy-n">×${n}</b>` : ''}</span><span class="buy-cost">${costChips(cost)}</span>
+        <span>Построить <b class="buy-n">${n > 1 ? '×' + n : ''}</b></span><span class="buy-cost">${costChips(cost)}</span>
       </button>
     </div>`;
+}
+// Сколько осталось до престижа планеты — коротко, прямо над постройками
+function prestigeMiniHtml(pid) {
+  const info = prestigeInfo(pid);
+  return `<div class="pp-mini ${info.ready ? 'ready' : ''}" data-action="gotodev" style="--i:1">
+    <div class="ppm-head"><span>🌀 До престижа №${info.n + 1}</span><span>${info.ready ? 'Готово! Нажмите →' : `×${info.mult} → ×${info.nextMult} · +${info.gems} 💎`}</span></div>
+    ${info.goals.map((g, k) => `<div class="ppm-goal ${g.ok ? 'ok' : ''}" data-g="${k}"><span class="ppm-l">${g.ok ? '✅' : '⬜'} ${esc(g.label)}</span>
+      <span class="ppm-v">${g.kind === 'stage' ? `${g.have}/${g.goal}` : `${fmt(Math.min(g.have, g.goal))}/${fmt(g.goal)}`}</span>
+      <span class="ppm-bar"><i style="width:${Math.min(100, (g.kind === 'stage' ? g.have / g.goal : g.have / g.goal) * 100).toFixed(1)}%"></i></span></div>`).join('')}
+  </div>`;
+}
+// Обновить карточки построек на месте, не пересоздавая кнопки
+function patchBuildPanel() {
+  const pid = cur(), c = $('panelContent');
+  for (const b of PL(pid).buildings) {
+    if (b.u > ps(pid).era) continue;
+    const card = c.querySelector(`[data-card="${b.id}"]`);
+    if (!card) continue;
+    const n = buyCount(pid, b), cost = bulkCost(pid, b, n), afford = canPay(cost), count = ps(pid).counts[b.id] || 0;
+    card.classList.toggle('affordable', afford);
+    const btn = card.querySelector('.btn-buy');
+    if (btn.disabled === afford) btn.disabled = !afford;
+    const nTxt = n > 1 ? '×' + n : '';
+    const bn = card.querySelector('.buy-n'); if (bn.textContent !== nTxt) bn.textContent = nTxt;
+    const chips = costChips(cost), bc = card.querySelector('.buy-cost');
+    if (bc._html !== chips) { bc.innerHTML = chips; bc._html = chips; }
+    const cc = card.querySelector('.card-count'), cTxt = '×' + count;
+    if (cc.textContent !== cTxt) cc.textContent = cTxt;
+    if (cc.hidden !== !count) cc.hidden = !count;
+  }
+  const mini = c.querySelector('.pp-mini');
+  if (mini) {
+    const info = prestigeInfo(pid);
+    mini.classList.toggle('ready', info.ready);
+    info.goals.forEach((g, k) => {
+      const row = mini.querySelector(`[data-g="${k}"]`); if (!row) return;
+      row.classList.toggle('ok', g.ok);
+      const v = g.kind === 'stage' ? `${g.have}/${g.goal}` : `${fmt(Math.min(g.have, g.goal))}/${fmt(g.goal)}`;
+      const vEl = row.querySelector('.ppm-v'); if (vEl.textContent !== v) vEl.textContent = v;
+      const l = `${g.ok ? '✅' : '⬜'} ${g.label}`, lEl = row.querySelector('.ppm-l'); if (lEl.textContent !== l) lEl.textContent = l;
+      row.querySelector('.ppm-bar i').style.width = Math.min(100, g.have / g.goal * 100).toFixed(1) + '%';
+    });
+    const head = mini.querySelector('.ppm-head span:last-child'), ht = info.ready ? 'Готово! Нажмите →' : `×${info.mult} → ×${info.nextMult} · +${info.gems} 💎`;
+    if (head.textContent !== ht) head.textContent = ht;
+  }
 }
 function perkCard(p, lvl, action, cardId, i, effectText) {
   const isMax = lvl >= p.max, cost = perkCost(p, lvl), canBuy = !isMax && state.gems >= cost;
@@ -3365,7 +4317,7 @@ function planetPerkEffect(p, lvl) {
 
 function panelTitle() {
   const P = PL(cur()), at = `<small>${P.icon} ${P.name}</small>`;
-  return ({ build: '🏗️ Постройки ' + at, perks: '🌳 Улучшения ' + at, rebirth: '🌀 Престиж ' + at, top: '🏆 Рейтинг',
+  return ({ build: '🏗️ Постройки ' + at, dev: '🌀 Развитие ' + at, top: '🏆 Рейтинг', chat: '💬 Чат',
     social: '👥 Друзья и альянсы', shop: '🎩 Образ ' + at })[ui.tab] || '';
 }
 
@@ -3374,15 +4326,21 @@ function renderPanel() {
   const container = $('panelContent');
   const scroll = container.scrollTop;
   const tab = ui.tab, pid = cur(), P = PL(pid), st = ps(pid);
+  container.classList.toggle('chat-mode', tab === 'chat');
 
   if (tab === 'top') {
     container.innerHTML = renderLeaderboardHtml();
   } else if (tab === 'social') {
     container.innerHTML = renderSocialHtml();
-  } else if (tab === 'rebirth') {
+  } else if (tab === 'chat') {
+    renderChatShell(container);
+    lastPanelSig = panelSig();
+    return;
+  } else if (tab === 'dev') {
+    // Престиж и улучшения — в одной вкладке: сначала престиж планеты, ниже перки
     const info = prestigeInfo(pid);
     let i = 0;
-    const others = PLANET_ORDER.filter(x => isUnlocked(x)).map(x => `<span class="pp-chip ${x === pid ? 'cur' : ''}">${PL(x).icon} ${prestigeCount(x)} 🌀 · ×${planetMult(x)}</span>`).join('');
+    const others = state.unlocked.filter(x => uniOf(x) === uniOf(pid)).map(x => `<span class="pp-chip ${x === pid ? 'cur' : ''}">${PL(x).icon} ${prestigeCount(x)} 🌀 · ×${planetMult(x)}</span>`).join('');
     container.innerHTML = `
       <div class="card rebirth-card" style="--i:${i++}">
         <div class="card-title" style="font-size:0.95rem;color:#f5d0fe;">🌀 Престиж планеты «${P.name}» №${info.n + 1}</div>
@@ -3397,18 +4355,15 @@ function renderPanel() {
         </button>
         <div class="pp-row">${others}</div>
       </div>
-      <div class="shop-note" style="--i:${i++}">Кристаллы 💎 тратятся во вкладке «🌳 Улучшения».</div>`;
-  } else if (tab === 'perks') {
-    let i = 0;
-    container.innerHTML = `
       <div class="section-header" style="--i:${i++}"><span>🌳 Древо Вечности · все планеты</span><span>💎 ${fmt(state.gems)}</span></div>
       ${GLOBAL_PERKS.map(p => perkCard(p, perk(p.id), 'perk', 'perk-' + p.id, i++, p.effect(perk(p.id)))).join('')}
       <div class="section-header" style="--i:${i++}"><span>${P.icon} Перки планеты · ${P.name}</span><span></span></div>
       ${P.perks.map(p => perkCard(p, ppk(pid, p.id), 'pperk', 'pp-' + p.id, i++, planetPerkEffect(p, ppk(pid, p.id)))).join('')}
-      <div class="shop-note" style="--i:${i++}">Кристаллы дают престиж, астероиды, сундуки и квесты.</div>`;
+      <div class="shop-note" style="--i:${i++}">Кристаллы дают престиж, астероиды, сундуки и квесты.${allyBonus ? ` Бонус альянса: +${Math.round(allyBonus * 100)}% к доходу.` : ''}${uniMult() > 1 ? ` Бонус измерений: +${Math.round((uniMult() - 1) * 100)}%.` : ''}</div>`;
   } else if (tab === 'shop') {
     const look = state.look[pid];
-    const items = COSMETICS.filter(c => c.type === ui.shopTab);
+    // образы закрытых измерений не показываем — пусть будут сюрпризом
+    const items = COSMETICS.filter(c => c.type === ui.shopTab && (!c.uni || state.unis.includes(c.uni)));
     container.innerHTML = `
       <div class="seg" style="--i:0">
         <button class="seg-btn ${ui.shopTab === 'hat' ? 'active' : ''}" data-action="shoptab" data-id="hat" type="button">🎩 Шапки</button>
@@ -3418,16 +4373,16 @@ function renderPanel() {
       ${items.map((item, idx) => {
         const owned = state.ownedCosmetics.includes(item.id);
         const equipped = item.type === 'hat' ? look.hat === item.id : look.bg === item.id;
-        const lockedPlanet = item.planet && !isUnlocked(item.planet);
+        const lockedPlanet = !!itemLock(item);
         const preview = item.type === 'bg'
           ? `<div class="icon-tile swatch" style="background:${item.swatch}"><span>${item.icon}</span></div>`
           : `<div class="icon-tile t-shop">${item.icon}</div>`;
-        const badge = item.code ? `<span class="planet-badge code">🎁 эксклюзив</span>` : item.chest ? `<span class="planet-badge chest">🧰 редкий</span>` : item.planet ? `<span class="planet-badge">${PL(item.planet).icon} ${PL(item.planet).name}</span>` : '';
+        const badge = item.code ? `<span class="planet-badge code">🎁 эксклюзив</span>` : item.chest ? `<span class="planet-badge chest">🧰 ${item.uni ? UNIVERSES[item.uni].short : 'редкий'}</span>` : item.planet ? `<span class="planet-badge">${PL(item.planet).icon} ${PL(item.planet).name}</span>` : item.uni ? `<span class="planet-badge">${UNIVERSES[item.uni].icon} ${UNIVERSES[item.uni].short}</span>` : '';
         let btn;
         if (owned) btn = `<button class="btn-buy ${equipped ? 'equipped' : ''}" data-action="cosmetic" data-id="${item.id}" type="button"><span>${equipped ? '✓ Надето' : 'Надеть'}</span>${equipped ? '<span class="buy-sub">снять</span>' : ''}</button>`;
         else if (item.code) btn = `<button class="btn-buy code-btn" data-action="codes" type="button"><span>🎁 Промокод</span><span class="buy-sub">только по коду</span></button>`;
         else if (item.chest) btn = `<button class="btn-buy chest-btn" data-action="chests" type="button"><span>🧰 Сундук</span><span class="buy-sub">только из сундуков</span></button>`;
-        else if (lockedPlanet) btn = `<button class="btn-buy" type="button" disabled><span>🔒 ${PL(item.planet).name}</span><span class="buy-sub">откройте планету</span></button>`;
+        else if (lockedPlanet) btn = `<button class="btn-buy" type="button" disabled><span>${itemLock(item)}</span><span class="buy-sub">ещё закрыто</span></button>`;
         else btn = `<button class="btn-buy" data-action="cosmetic" data-id="${item.id}" type="button" ${canPay(item.cost) ? '' : 'disabled'}><span>Купить</span><span class="buy-cost">${costChips(item.cost)}</span></button>`;
         return `
           <div class="card ${equipped ? 'equipped-card' : ''}" data-card="c-${item.id}" style="--i:${idx + 2}">
@@ -3440,14 +4395,14 @@ function renderPanel() {
           </div>`;
       }).join('')}`;
   } else {
-    // все постройки планеты в одной вкладке — по порядку открытия
+    // все постройки планеты в одной вкладке — по порядку открытия; сверху — сколько осталось до престижа
     const mult = prodMult(pid);
     const list = P.buildings.map((b, k) => ({ b, k })).sort((x, y) => x.b.u - y.b.u || x.k - y.k).map(x => x.b);
     const open = list.filter(b => b.u <= st.era);
     const next = list.find(b => b.u > st.era);
     const modes = `<div class="buy-modes" style="--i:0"><span class="bm-lbl">Купить</span>${BUY_MODES.map(m => `<button class="bm-btn ${ui.buyMode === m ? 'active' : ''}" data-action="buymode" data-id="${m}" type="button">${m === 'max' ? 'MAX' : '×' + m}</button>`).join('')}</div>`;
-    container.innerHTML = (open.length ? modes : '') + open.map((b, i) => buildingCard(pid, b, mult, Math.min(i + 1, 14))).join('')
-      + (next ? `<div class="card teaser" style="--i:${Math.min(open.length + 1, 15)}"><div class="icon-tile locked-tile">${next.icon}</div><div class="card-info"><div class="card-title"><span>🔒 ${next.name}</span></div><div class="card-desc" style="margin:0;">Откроется: ${stageLabel(pid, next.u)} «${P.eras[next.u].name}»</div></div></div>` : '')
+    container.innerHTML = (open.length ? modes : '') + prestigeMiniHtml(pid) + open.map((b, i) => buildingCard(pid, b, mult, Math.min(i + 2, 14))).join('')
+      + (next ? `<div class="card teaser" style="--i:${Math.min(open.length + 2, 15)}"><div class="icon-tile locked-tile">${next.icon}</div><div class="card-info"><div class="card-title"><span>🔒 ${next.name}</span></div><div class="card-desc" style="margin:0;">Откроется: ${stageLabel(pid, next.u)} «${P.eras[next.u].name}»</div></div></div>` : '')
       + (!open.length && !next ? '<div class="empty"><div class="empty-ico">🌌</div><div class="empty-text">Здесь пока пусто</div></div>' : '');
   }
   container.scrollTop = scroll;
@@ -3471,6 +4426,8 @@ function openPanel(name) {
   resizeCanvas();
   if (name === 'top') fetchLeaderboard();
   if (name === 'social') fetchSocial();
+  if (name === 'chat') { if (!social && canOnline()) fetchSocial(); fetchChatSummary(); }
+  tutEvent('tab:' + name);
 }
 function closePanel() {
   if (!ui.tab) return;
@@ -3511,7 +4468,18 @@ function setupEvents() {
     else if (a === 'allyjoincode') joinAllianceByCode();
     else if (a === 'allycreate') openAllianceCreate();
     else if (a === 'allyperiod') { if (ui.allyPeriod !== id) { ui.allyPeriod = id; Sound.ui(); fetchAlliances(); } }
+    else if (a === 'allydonate') openDonate();
+    else if (a === 'chatally') { ui.chatTab = 'ally'; ui.chatWith = null; openPanel('chat'); }
+    else if (a === 'chattab') { if (ui.chatTab !== id || ui.chatWith) { ui.chatTab = id; ui.chatWith = null; chatShellVer++; Sound.ui(); renderPanel(); } }
+    else if (a === 'chatwith') { ui.chatWith = id; chatShellVer++; Sound.ui(); renderPanel(); }
+    else if (a === 'chatback') { ui.chatWith = null; chatShellVer++; Sound.ui(); renderPanel(); fetchChatSummary(); }
+    else if (a === 'chatsend') sendChat();
+    else if (a === 'chatdel' || a === 'chatmute') chatAdmin(a, id);
+    else if (a === 'gofriends') { ui.socialTab = 'friends'; openPanel('social'); }
+    else if (a === 'goally') { ui.socialTab = 'ally'; openPanel('social'); }
   });
+  // карточка «До престижа» в постройках — переход во вкладку «Развитие»
+  $('panelContent').addEventListener('click', (e) => { if (e.target.closest('.pp-mini')) { Sound.ui(); openPanel('dev'); } });
   // строки рейтинга, друзья, участники альянса — открывают профиль (вся строка, а не только кнопка)
   $('panelContent').addEventListener('click', (e) => {
     if (e.target.closest('button')) return;
@@ -3519,7 +4487,12 @@ function setupEvents() {
     if (!row) return;
     if (row.dataset.nick) openPlayer(row.dataset.nick); else openAlliance(+row.dataset.ally);
   });
-  $('panelContent').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'friendCodeInput') addFriend(); if (e.key === 'Enter' && e.target.id === 'allyCodeInput') joinAllianceByCode(); });
+  $('panelContent').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    if (e.target.id === 'friendCodeInput') addFriend();
+    if (e.target.id === 'allyCodeInput') joinAllianceByCode();
+    if (e.target.id === 'chatInput') { e.preventDefault(); sendChat(); }
+  });
   $('panelClose').addEventListener('click', closePanel);
   // смахнуть панель вниз — закрыть
   let dragY = null;
@@ -3545,10 +4518,13 @@ function setupEvents() {
   $('mapOverlay').addEventListener('click', (e) => {
     const pl = e.target.closest('.pl[data-planet], .pchip-btn[data-planet]');
     if (pl) { ui.mapSel = pl.dataset.planet; Sound.ui(); renderMap(); return; }
+    const ut = e.target.closest('.uni-tab[data-uni], .hole-teaser[data-uni]');   // не body[data-uni]!
+    if (ut) { setMapUni(ut.dataset.uni); return; }
     const btn = e.target.closest('button[data-action]');
     if (btn && !btn.disabled) {
       if (btn.dataset.action === 'travel') travelTo(btn.dataset.id);
       if (btn.dataset.action === 'expedition') launchExpedition(btn.dataset.id);
+      if (btn.dataset.action === 'universe') enterUniverse(btn.dataset.id);
       return;
     }
     if (e.target === $('mapOverlay')) closeMap();
@@ -3557,6 +4533,7 @@ function setupEvents() {
   $('userChip').addEventListener('click', openProfile);
   $('demoBtn').addEventListener('click', startDemo);
   $('googleBtn').addEventListener('click', startGoogleLogin);
+  $('yandexBtn').addEventListener('click', () => startOAuthLogin('yandex'));
   $('twitchBtn').addEventListener('click', twitchLogin);
   if (IS_TWITCH) $('loginNote').textContent = 'Мы храним только ваш ник и игровой прогресс. Имя и почту из Twitch игра не получает.';
   $('loginCancel').addEventListener('click', () => { takePendingLogin(); showLogin(''); });
@@ -3578,6 +4555,14 @@ function setupEvents() {
   });
   $('shopClose').addEventListener('click', () => { $('shopOverlay').classList.remove('open'); Sound.ui(); });
   $('chestList').addEventListener('click', (e) => { const b = e.target.closest('.chest-buy'); if (b && !b.disabled) openChest(b.dataset.chest); });
+  $('shopTabs').addEventListener('click', (e) => { const b = e.target.closest('.seg-btn'); if (b && ui.storeTab !== b.dataset.id) { ui.storeTab = b.dataset.id; Sound.ui(); renderShop(); } });
+  $('soundList').addEventListener('click', (e) => {
+    const pl = e.target.closest('[data-play]');
+    if (pl) { const st = pl.dataset.play; Sound.tap(false, st, 1); setTimeout(() => Sound.tap(false, st, 2), 170); setTimeout(() => Sound.tap(true, st, 3), 340); return; }
+    const b = e.target.closest('[data-snd]'); if (b && !b.disabled) handleCosmetic(b.dataset.snd);
+  });
+  $('coachNext').addEventListener('click', tutNext);
+  $('coachSkip').addEventListener('click', tutSkip);
   $('chestOverlay').addEventListener('click', (e) => { if (e.target.closest('#chestTake')) return; revealChest(); });
   $('chestTake').addEventListener('click', () => { Sound.coin(); closeChest(); });
   $('shopQuests').addEventListener('click', () => { $('shopOverlay').classList.remove('open'); openQuests(); });
@@ -3634,6 +4619,8 @@ setInterval(() => {
   if (!activeAsteroid && !cinemaOpen && !traveling) {
     bossCooldown -= dt;
     if (bossCooldown <= 0) spawnAsteroid();
+  } else if (activeAsteroid && !document.hidden && performance.now() - astStepAt > 600) {
+    stepAsteroid(dt);   // кадры не идут — двигаем астероид отсюда, чтобы таймер не замирал
   }
 
   const autoLvl = perk('autoclicker');
