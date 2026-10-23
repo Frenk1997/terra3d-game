@@ -62,8 +62,10 @@ function defaultPlanet(pid) {
 }
 // Статистика за всё время (не сбрасывается перерождением) — для квестов
 // friends и alliance — сколько было друзей и был ли альянс (для достижений; знает сервер)
-// combo — лучшая серия тапов, donated — сколько 💎 вложено в альянс
-const STAT_KEYS = ['taps', 'built', 'asteroids', 'golden', 'evolves', 'perks', 'travels', 'playSec', 'chests', 'friends', 'alliance', 'combo', 'donated'];
+// combo — лучшая серия тапов, donated — сколько 💎 вложено в альянс, stars — пойманные звёзды,
+// chatMsgs — сообщения в чат, streak — лучшая серия дней входа, weekly — полученные награды недели
+const STAT_KEYS = ['taps', 'built', 'asteroids', 'golden', 'evolves', 'perks', 'travels', 'playSec', 'chests', 'friends', 'alliance', 'combo', 'donated',
+  'stars', 'chatMsgs', 'streak', 'weekly'];
 function defaultStats() {
   const st = { maxEra: {} };
   STAT_KEYS.forEach(k => st[k] = 0);
@@ -81,7 +83,7 @@ function defaultState() {
   return {
     v: GAME_VERSION, planet: 'earth', unlocked: ['earth'], unis: ['sol'], planets, gems: 0, sapphires: 0,
     perks, ppk, ppr, rebirths: 0, boostUntil: 0, ownedCosmetics: [], look, stats: defaultStats(), quests: defaultQuests(),
-    tapSound: DEFAULT_TAP_SOUND, tut: 0, lastSave: Date.now()
+    tapSound: DEFAULT_TAP_SOUND, tut: 0, login: { day: '', streak: 0 }, legend: 0, lastSave: Date.now()
   };
 }
 let state = defaultState();
@@ -145,6 +147,8 @@ function applySave(p) {
       d.unis = UNIVERSE_ORDER.filter(u => u === 'sol' || un.includes(u) || d.unlocked.some(x => uniOf(x) === u));
       d.tapSound = typeof p.tapSound === 'string' ? p.tapSound : DEFAULT_TAP_SOUND;
       d.tut = Number.isInteger(p.tut) ? p.tut : TUT_DONE;   // старые сохранения — обучение уже не нужно
+      if (p.login && typeof p.login === 'object') d.login = { day: typeof p.login.day === 'string' ? p.login.day.slice(0, 10) : '', streak: Math.min(100000, int(p.login.streak)) };
+      d.legend = p.legend ? 1 : 0;
       d.ownedCosmetics = Array.isArray(p.ownedCosmetics) ? p.ownedCosmetics : [];
       d.lastSave = Number(p.lastSave) || Date.now();
       d.sapphires = int(p.sapphires);
@@ -207,8 +211,17 @@ function setAllyBonus(level) {
   allyBonus = b;
   try { localStorage.setItem('terra_ally_bonus', String(b)); } catch (e) {}
 }
-function prodMult(pid) { return planetMult(pid) * speedMult() * boostMult() * uniMult() * (1 + allyBonus) * (1 + planetPerkBonus(pid, 'prod')); }
-function clickGain(pid = cur()) { return Math.ceil(PL(pid).eras[ps(pid).era].click * planetMult(pid) * boostMult() * uniMult() * (1 + planetPerkBonus(pid, 'click'))); }
+// Бонусы падающих звёзд: короткие, действуют только пока игра открыта. noBuffs > 0 — считаем без них
+// (офлайн-доход, сундуки, клад звезды — иначе ×3 «ветра» попал бы в 8 часов офлайна).
+const buffs = { frenzy: 0, wind: 0 };
+let noBuffs = 0;
+const buffLeft = (k) => Math.max(0, (buffs[k] || 0) - Date.now());
+const starBonus = (id) => STAR_BONUS.find(b => b.id === id);
+function frenzyMult() { return !noBuffs && buffLeft('frenzy') > 0 ? starBonus('frenzy').mult : 1; }
+function windMult() { return !noBuffs && buffLeft('wind') > 0 ? starBonus('wind').mult : 1; }
+function withoutBuffs(fn) { noBuffs++; try { return fn(); } finally { noBuffs--; } }
+function prodMult(pid) { return planetMult(pid) * speedMult() * boostMult() * uniMult() * windMult() * (1 + allyBonus) * (1 + planetPerkBonus(pid, 'prod')); }
+function clickGain(pid = cur()) { return Math.ceil(PL(pid).eras[ps(pid).era].click * planetMult(pid) * boostMult() * uniMult() * frenzyMult() * (1 + planetPerkBonus(pid, 'click'))); }
 // серия быстрых тапов (перк «Комбо-тапы»): до ×50, тап сильнее на 20% за уровень перка на полной серии
 const COMBO_MAX = 50, COMBO_GAP_MS = 650;
 const combo = { n: 0, at: 0 };
@@ -763,6 +776,7 @@ function startPlaying(offline) {
   grantOffline((Date.now() - (state.lastSave || Date.now())) / 1000);
   bossCooldown = BOSS_FIRST_MIN + Math.random() * (BOSS_FIRST_MAX - BOSS_FIRST_MIN);
   endAsteroid(true);
+  star = null; starCooldown = randIn(STAR.first); buffs.frenzy = buffs.wind = 0;
   playing = true;
   lastTick = Date.now();
   ui.tab = null; document.body.classList.remove('panel-open');
@@ -776,6 +790,11 @@ function startPlaying(offline) {
   checkUpdate();
   if (canOnline()) setTimeout(() => { fetchSocial(); fetchChatSummary(); }, 1500);   // бонус альянса и непрочитанные сообщения
   setTimeout(tutStart, 900);
+  // награды: за вход (раз в день), недели (с сервера), финал
+  popupQueue.length = 0; weeklyChecked = false; weeklyData = null;
+  promptLogin();
+  if (canOnline()) setTimeout(fetchWeeklyRewards, 2500);
+  setTimeout(checkLegend, 2000);
 }
 
 // офлайн-доход: 50% дохода до 8 часов; «Капсула времени» добавляет +10% и +2 ч за уровень
@@ -786,7 +805,7 @@ function grantOffline(sec) {
   const eff = OFFLINE_EFFICIENCY + cap * 0.1;
   let shown = 0;
   state.unlocked.forEach(pid => {
-    const r = rates(pid);
+    const r = withoutBuffs(() => rates(pid));
     for (const k in r) {
       if (r[k] <= 0) continue;
       const add = r[k] * sec * eff;
@@ -856,7 +875,7 @@ async function logout({ ask = true, skipSync = false, keepCache = false, message
   chat.lists = {}; chat.summary = null; setAllyBonus(0);
   state = defaultState();
   endAsteroid(true);
-  particles = []; ripples = []; debris = [];
+  particles = []; ripples = []; debris = []; star = null; buffs.frenzy = buffs.wind = 0; loginPromptDay = ''; popupQueue.length = 0;
   ui.tab = null; document.body.classList.remove('panel-open');
   social = null; allyList = null;
   onPlanetChanged(); updateUserChip(); renderRankPill(); setSync('');
@@ -1071,7 +1090,7 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- Диалоги ----------
 function closeAllOverlays() {
-  ['nickOverlay', 'profileOverlay', 'allyOverlay', 'settingsOverlay', 'confirmOverlay', 'loginOverlay', 'mapOverlay', 'questsOverlay', 'shopOverlay', 'codeOverlay', 'chestOverlay'].forEach(id => $(id).classList.remove('open'));
+  ['nickOverlay', 'profileOverlay', 'allyOverlay', 'settingsOverlay', 'confirmOverlay', 'loginOverlay', 'mapOverlay', 'questsOverlay', 'shopOverlay', 'codeOverlay', 'chestOverlay', 'loginRewardOverlay', 'weeklyOverlay'].forEach(id => $(id).classList.remove('open'));
   if (!forcedUpdate) $('updateOverlay').classList.remove('open');
 }
 function askConfirm({ title, text, ok = 'Да', cancel = 'Отмена', danger = false }) {
@@ -1213,6 +1232,7 @@ function renderAllyBoardHtml(period) {
       <button class="seg-btn ${period === 'all' ? 'active' : ''}" data-action="lbperiod" data-id="all" type="button">♾️ За всё время</button>
     </div>`;
   if (period === 'week' && L && L.week) html += `<div class="lb-week">⏳ Неделя закончится через ${fmtLeft(L.week.endsAt - Date.now())}</div>`;
+  if (period === 'week') html += `<div class="lb-prize">🎁 Каждому участнику альянса за место: ${weeklyRewardTable(WEEKLY_ALLY_REWARDS)}</div>`;
   if (!L) html += allyErr ? `<div class="empty"><div class="empty-ico">📡</div><div class="empty-title">Не удалось загрузить</div></div>` : '<div class="skeleton"></div>'.repeat(5);
   else if (!L.alliances.length) html += `<div class="empty"><div class="empty-ico">🛡️</div><div class="empty-title">Пока пусто</div><div class="empty-text">${period === 'week' ? 'На этой неделе альянсы ещё не тапали.' : 'Альянсов пока нет — основатель должен пройти все пять планет.'}</div></div>`;
   else html += allyPodium(L.alliances) + L.alliances.map((a, i) => allyRow(a, i, false)).join('');
@@ -1239,6 +1259,7 @@ function renderLeaderboardHtml() {
       <button class="seg-btn ${period === 'all' ? 'active' : ''}" data-action="lbperiod" data-id="all" type="button">♾️ За всё время</button>
     </div>`;
   if (period === 'week' && d && d.week) html += `<div class="lb-week">⏳ Неделя закончится через ${fmtLeft(d.week.endsAt - Date.now())} — тогда топ начнётся заново</div>`;
+  if (period === 'week' && board === 'all') html += `<div class="lb-prize">🎁 Награды за место в топе недели: ${weeklyRewardTable(WEEKLY_PLAYER_REWARDS)}</div>`;
   if (me) {
     let rank = '—', stat;
     if (board === 'all' && period === 'all') {
@@ -1398,7 +1419,7 @@ function renderSocialHtml() {
       <div class="add-row" style="--i:2"><input id="friendCodeInput" type="text" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Код друга"><button class="btn-small" data-action="addfriend" type="button">Добавить</button></div>
       ${msg}
       <div class="section-header" style="--i:3"><span>Друзья · ${nf}/${social.friendsMax}</span><span>${social.friends.filter(f => f.online).length} в сети</span></div>`;
-    html += nf ? social.friends.map((f, i) => personRow(f, i + 4)).join('')
+    html += nf ? social.friends.map((f, i) => personRow(f, i + 4, { val: `<button class="btn-small soft dm-btn" data-action="chatwith" data-id="${esc(f.nickname)}" type="button" title="Написать">✉️</button>` })).join('')
       : `<div class="empty"><div class="empty-ico">🤝</div><div class="empty-title">Пока никого</div><div class="empty-text">Отправьте другу свой код или введите его код выше — и вы сразу друзья у обоих.</div></div>`;
     return html;
   }
@@ -1678,8 +1699,13 @@ function profileStatsHtml(st, extra) {
     ${box('★', fmt(extra.score || 0), 'очки')}${box('🌀', fmt(extra.rebirths || 0), 'престижи')}${box('🏆', extra.rank ? '#' + extra.rank : '—', 'место')}
     ${box('👆', fmt(st.taps || 0), 'тапы')}${box('🏗️', fmt(st.built || 0), 'постройки')}${box('☄️', fmt(st.asteroids || 0), 'астероиды')}
     ${box('🏅', `${st.achievements || 0}/${ACHIEVEMENTS.length}`, 'достижения')}${box('⏱️', fmtPlay(st.playSec || 0), 'в игре')}${box('🧰', fmt(st.chests || 0), 'сундуки')}
+    ${box('🌠', fmt(st.stars || 0), 'звёзды')}${box('🔥', '×' + fmt(st.combo || 0), 'лучшее комбо')}${box('📅', fmt(st.streak || 0), 'дней подряд')}
   </div>`;
 }
+// прошёл ли игрок все 15 планет (по данным профиля с сервера)
+const legendOf = (pl) => !!pl && PLANET_ORDER.every(pid => pl[pid] && pl[pid].open && pl[pid].best >= PL(pid).eras.length - 1);
+// чем вошёл игрок: Google, Яндекс ID или Twitch (по виду идентификатора аккаунта)
+function accountKind() { const u = currentUid() || ''; return u.startsWith('ya_') ? 'Яндекс ID' : u.startsWith('tw_') ? 'Аккаунт Twitch' : 'Аккаунт Google'; }
 function profilePlanetsHtml(pl) {
   // измерения, где у игрока нет ни одной открытой планеты, не показываем (кроме Солнечной)
   return UNIVERSE_ORDER.filter(u => u === 'sol' || UNIVERSES[u].planets.some(pid => pl[pid] && pl[pid].open))
@@ -1707,7 +1733,8 @@ function openProfile() {
     <div class="pf-cover"><button class="btn-icon" id="pfClose" type="button">✕</button>
       <div class="avatar lg" style="${avatarStyle(p.nickname)}">${esc(initialOf(p.nickname))}</div>
       <div class="pf-name">${esc(p.nickname)}</div>
-      <div class="pf-status">${online ? '<i class="online-dot on"></i> Аккаунт Google · прогресс в облаке' : 'Гость — прогресс не сохраняется'}</div>
+      <div class="pf-status">${online ? `<i class="online-dot on"></i> ${accountKind()} · прогресс в облаке` : 'Гость — прогресс не сохраняется'}</div>
+      ${planetsMaxedAll() >= PLANET_ORDER.length ? '<div class="pf-legend">♾️ Легенда всех измерений</div>' : ''}
       ${A ? `<div class="pf-ally" data-ally="${A.id}">${A.emblem} ${esc(A.name)}</div>` : ''}
     </div>
     <div class="pf-body">
@@ -1752,6 +1779,7 @@ async function openPlayer(nick) {
       <div class="avatar lg" style="${avatarStyle(d.nickname)}">${esc(initialOf(d.nickname))}</div>
       <div class="pf-name">${esc(d.nickname)}</div>
       <div class="pf-status">${ago} · 👥 ${fmt(d.friends)} ${plural(d.friends, 'друг', 'друга', 'друзей')}${d.friend ? ' · 🤝 ваш друг' : ''}</div>
+      ${legendOf(d.planets) ? '<div class="pf-legend">♾️ Легенда всех измерений</div>' : ''}
       ${d.alliance ? `<div class="pf-ally" data-ally="${d.alliance.id}">${d.alliance.emblem} ${esc(d.alliance.name)}</div>` : ''}
     </div>
     <div class="pf-body">
@@ -1759,10 +1787,11 @@ async function openPlayer(nick) {
       <div class="pf-sec">Планеты</div>
       ${profilePlanetsHtml(d.planets)}
       <div class="version">В игре с ${new Date(d.since).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })}</div>
-      ${d.friend ? `<button class="btn-soft danger" id="pfUnfriend" type="button">Удалить из друзей</button>` : ''}
+      ${d.friend ? `<button class="btn-main" id="pfDm" type="button">✉️ Написать</button><button class="btn-soft danger" id="pfUnfriend" type="button">Удалить из друзей</button>` : ''}
     </div>`;
   $('pfClose').onclick = () => $('profileOverlay').classList.remove('open');
   if ($('pfUnfriend')) $('pfUnfriend').onclick = () => removeFriend(d.nickname);
+  if ($('pfDm')) $('pfDm').onclick = () => { $('profileOverlay').classList.remove('open'); openChatWith(d.nickname); };
   const ally = sheet.querySelector('.pf-ally');
   if (ally) ally.onclick = () => openAlliance(+ally.dataset.ally);
 }
@@ -1918,6 +1947,7 @@ async function sendChat() {
     const r = await api('/api/chat', { method: 'POST', body: { ch: ui.chatTab, with: ui.chatWith || undefined, text } });
     const L = chat.lists[chatKey()];
     if (L && r.message && !L.msgs.some(m => m.id === r.message.id)) { L.msgs.push(r.message); L.last = Math.max(L.last, r.message.id); L.scrolled = false; renderChatList(); markChatRead(chatKey(), L.last); }
+    stat('chatMsgs'); saveLocal();
     Sound.ui();
     setTimeout(() => fetchChat(false), 400);
   } catch (e) {
@@ -1956,7 +1986,7 @@ const TUT = [
   { target: '.pp-mini', title: 'Цели престижа 🌀', text: 'Здесь видно, сколько осталось до престижа: он сбрасывает планету, но навсегда удваивает её доход.', btn: 'Дальше' },
   { target: '#eraCard', title: 'Эволюция ⏫', text: 'Копите ресурсы и жмите «Эволюция» — планета перейдёт в новую эпоху и откроет новые постройки.', btn: 'Дальше' },
   { target: '.tab-btn[data-tab="dev"]', title: 'Развитие', text: 'Престиж планеты и улучшения за 💎 кристаллы — в одной вкладке.', btn: 'Дальше' },
-  { target: '#astPill', close: true, title: 'Астероиды ☄️', text: 'Иногда к планете летит астероид — жмите по нему! За сбитые дают 💎 кристаллы.', btn: 'Дальше' },
+  { target: '#astPill', close: true, title: 'Астероиды и звёзды ☄️🌠', text: 'Иногда к планете летит астероид — жмите по нему, за сбитые дают 💎 кристаллы. А если пролетит падающая звезда — поймайте её: будет бонус!', btn: 'Дальше' },
   { target: '#questBtn', title: 'Квесты и магазин', text: 'Задания дают 🔷 сапфиры. В магазине за них — сундуки и новые звуки тапа.', btn: 'Дальше' },
   { target: '#mapBtn', title: 'Карта 🪐', text: 'Новые планеты, а дальше — чёрная дыра в измерение CS2 и вселенную Майнкрафт!', btn: 'Дальше' },
   { target: '.tab-btn[data-tab="chat"]', title: 'Чат, друзья и топ', text: 'Общайтесь с игроками, вступайте в альянс и поднимайтесь в рейтинге. Удачи!', btn: `Готово (+${TUT_REWARD} 🔷)` }
@@ -2069,6 +2099,10 @@ function openCheats() {
       <button class="btn-small" data-cx="offline" type="button">😴 +8 часов офлайн-дохода</button>
       <button class="btn-small soft" data-cx="quests" type="button">📜 Новые задания дня</button>
       <button class="btn-small soft" data-cx="tutorial" type="button">🎓 Обучение заново</button>
+      <button class="btn-small" data-cx="star" type="button">🌠 Падающая звезда</button>
+      <button class="btn-small soft" data-cx="login" type="button">📅 Награда за вход заново</button>
+      <button class="btn-small soft" data-cx="weekly" type="button">🏆 Проверить награды недели</button>
+      <button class="btn-small soft" data-cx="legend" type="button">♾️ Финал заново</button>
     </div></div>
     <div class="set-text dim">Изменения сохраняются в облако. Рейтинг админа сервер принимает без ограничений — не забудьте вернуть свой прогресс после проверки.</div>
     <button class="btn-soft" id="chBack" type="button">← Настройки</button>`;
@@ -2101,7 +2135,7 @@ function openCheats() {
     if (a === 'prestigeAll') state.unlocked.forEach(x => { state.ppr[x] = prestigeCount(x) + 1; });
     else if (a === 'prestigeZero') state.ppr[pid] = 0;
     else if (a === 'unlockAll') { state.unis = UNIVERSE_ORDER.slice(); PLANET_ORDER.forEach(x => { if (!isUnlocked(x)) state.unlocked.push(x); }); }
-    else if (a === 'maxAll') state.unlocked.forEach(x => { ps(x).era = PL(x).eras.length - 1; state.stats.maxEra[x] = ps(x).era; });
+    else if (a === 'maxAll') { state.unlocked.forEach(x => { ps(x).era = PL(x).eras.length - 1; state.stats.maxEra[x] = ps(x).era; }); setTimeout(checkLegend, 300); }
     else if (a === 'perks') { GLOBAL_PERKS.forEach(p => { state.perks[p.id] = p.max; }); state.unlocked.forEach(x => PL(x).perks.forEach(p => { state.ppk[x][p.id] = p.max; })); }
     else if (a === 'items') COSMETICS.forEach(c => { if (!state.ownedCosmetics.includes(c.id) && !c.free) state.ownedCosmetics.push(c.id); });
     else if (a === 'asteroid' || a === 'golden') { $('settingsOverlay').classList.remove('open'); endAsteroid(true); spawnAsteroid(a === 'golden'); return; }
@@ -2109,8 +2143,42 @@ function openCheats() {
     else if (a === 'offline') grantOffline(8 * 3600);
     else if (a === 'quests') { state.quests.day = ''; ensureQuestDay(); updateQuestBadge.n = -1; }
     else if (a === 'tutorial') { $('settingsOverlay').classList.remove('open'); tutRestart(); return; }
+    else if (a === 'star') { $('settingsOverlay').classList.remove('open'); star = null; spawnStar(); return; }
+    else if (a === 'login') { state.login = { day: '', streak: (state.login && state.login.streak) || 0 }; $('settingsOverlay').classList.remove('open'); setTimeout(openLoginReward, 200); }
+    else if (a === 'weekly') { weeklyChecked = false; $('settingsOverlay').classList.remove('open'); fetchWeeklyRewards().then(() => { if (!weeklyData) showToast('🏆 Наград за прошлую неделю нет (или уже забраны)', 2500); }); return; }
+    else if (a === 'legend') { state.legend = 0; state.ownedCosmetics = state.ownedCosmetics.filter(id => id !== 'hat_legend' && id !== 'bg-multiverse'); $('settingsOverlay').classList.remove('open'); setTimeout(checkLegend, 300); }
     cheatDone('Готово'); openCheats();
   });
+}
+
+// ============================================================
+//  СПРАВОЧНИК «КАК ИГРАТЬ»
+// ============================================================
+const HELP = [
+  ['👆', 'Тапы и постройки', 'Тап по планете приносит её главный ресурс. Постройки добывают ресурсы сами — даже когда игра закрыта (до 8 часов, вполсилы). Покупайте по одной или пачкой: ×10, ×50, ×100, MAX.'],
+  ['⏫', 'Эпохи и этапы', 'Накопите ресурсы и нажмите «Эволюция»: планета меняет облик и открывает новые постройки. У Земли 15 эпох, у остальных планет по 10 этапов.'],
+  ['🌀', 'Престиж', 'Сбрасывает только текущую планету, но навсегда умножает её доход и тап (×2, ×3…) и даёт 💎. Цели видны над постройками и во вкладке «Развитие».'],
+  ['💎', 'Кристаллы и улучшения', 'Кристаллы — за престиж, астероиды, звёзды и сундуки. Тратятся во вкладке «Развитие»: Древо Вечности работает на всех планетах, перки планеты — только на ней.'],
+  ['☄️', 'Астероиды', 'Раз в несколько минут к планете летит астероид — тапайте по нему, пока не разобьёте. Золотой даёт втрое больше.'],
+  ['🌠', 'Падающие звёзды', 'Поймайте звезду — выпадет бонус: тапы ×7, доход ×3, клад за 15 минут, кристаллы или сапфир.'],
+  ['📜', 'Квесты и сапфиры', 'Три задания каждый день, достижения и награда за вход (7 дней подряд — бесплатный сундук). Сапфиры 🔷 тратятся в магазине на сундуки и звуки тапа.'],
+  ['🪐', 'Планеты и измерения', 'На карте — экспедиции на новые планеты. Пройдите Солнечную систему, и откроется чёрная дыра в измерение CS2, а из него — портал во вселенную Майнкрафт. Каждое измерение +25% к доходу всех планет.'],
+  ['🏆', 'Топы и награды недели', 'Общий топ, престижи каждого измерения, топы планет и альянсов — за неделю и за всё время. В понедельник лучшие игроки и альянсы прошлой недели получают сапфиры.'],
+  ['🛡️', 'Друзья и альянсы', 'Друзья — по коду. В альянсе тапы и вложенные 💎 дают мощь: она поднимает альянс в топе и даёт уровни (+2% дохода всем). Основать альянс может прошедший всю Солнечную систему.'],
+  ['💬', 'Чат', 'Общий чат, чат альянса и личные сообщения друзьям. Мат скрывается, ссылки запрещены.'],
+  ['♾️', 'Финал', 'Пройдите все этапы на всех 15 планетах — получите титул «Легенда всех измерений», корону и фон «Мультивселенная».']
+];
+function openHelp() {
+  const sheet = $('settingsSheet');
+  sheet.innerHTML = `
+    <div class="q-head"><div><h2>📖 Как играть</h2><div class="q-sub">Всё самое важное — коротко</div></div><button class="btn-icon" id="setClose" type="button">✕</button></div>
+    <div class="help-list">${HELP.map(([i, t, d]) => `<div class="help-row"><span class="help-ico">${i}</span><div><b>${t}</b><p>${d}</p></div></div>`).join('')}</div>
+    <button class="btn-soft" id="helpBack" type="button">← Настройки</button>`;
+  $('setClose').onclick = () => $('settingsOverlay').classList.remove('open');
+  $('helpBack').onclick = () => renderSettings();
+  if (!$('settingsOverlay').classList.contains('open')) $('settingsOverlay').classList.add('open');
+  sheet.scrollTop = 0;
+  Sound.ui();
 }
 
 // ============================================================
@@ -2141,6 +2209,7 @@ function renderSettings() {
       ${isAdmin && playing ? '<button class="btn-main" id="setCheats" type="button">🛠️ Чит-меню администратора</button>' : ''}
       ${myProfile ? '<button class="btn-soft" id="setProfile" type="button">👤 Мой профиль и статистика</button>' : ''}
       <button class="btn-soft" id="setCode" type="button">🎁 Ввести промокод</button>
+      <button class="btn-soft" id="setHelp" type="button">📖 Как играть — справочник</button>
       ${playing ? '<button class="btn-soft" id="setTut" type="button">🎓 Пройти обучение заново</button>' : ''}
       ${online && !demo && IS_TWITCH && !twitchLinked ? '<button class="btn-main" id="setTwLink" type="button">🔗 Привязать аккаунт из игры</button>' : ''}
       ${online && !demo && IS_TWITCH && twitchLinked ? '<div class="set-text">🔗 Привязан аккаунт из игры — прогресс общий с телефоном и сайтом</div><button class="btn-soft" id="setTwUnlink" type="button">Отвязать аккаунт из игры</button>' : ''}
@@ -2166,6 +2235,7 @@ function renderSettings() {
   if ($('setProfile')) $('setProfile').onclick = () => { close(); openProfile(); };
   if ($('setCheats')) $('setCheats').onclick = () => openCheats();
   if ($('setTut')) $('setTut').onclick = () => { close(); tutRestart(); };
+  $('setHelp').onclick = () => openHelp();
   $('setCode').onclick = () => { close(); openCodes(); };
   if ($('setUpdate')) $('setUpdate').onclick = () => { close(); downloadUpdate(); };
   if ($('setLogout')) $('setLogout').onclick = () => { close(); logout(); };
@@ -2242,6 +2312,7 @@ function initCanvas() {
     if (!playing) return;
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    if (star && Math.hypot(mx - star.x, my - star.y) <= 40) { catchStar(); return; }
     if (activeAsteroid && Math.hypot(mx - activeAsteroid.x, my - activeAsteroid.y) <= activeAsteroid.r + 22) { damageAsteroid(false); return; }
     handlePlanetClick(mx, my);
   });
@@ -3203,6 +3274,7 @@ function drawScene(now) {
   }
 
   if (activeAsteroid) drawAsteroid(f, now);
+  if (star) drawStar(now);
 }
 
 // ============================================================
@@ -3420,6 +3492,94 @@ function flyAbs(px, py, icon, n, target) {
   setTimeout(() => { target.classList.remove('pop'); void target.offsetWidth; target.classList.add('pop'); }, 700);
 }
 
+
+// ============================================================
+//  ПАДАЮЩИЕ ЗВЁЗДЫ
+// ============================================================
+// Раз в несколько минут над планетой пролетает звезда (STAR.life секунд). Тап по ней — случайный бонус
+// из STAR_BONUS: лихорадка тапов, солнечный ветер, клад, кристаллы или сапфир.
+const randIn = ([a, b]) => a + Math.random() * (b - a);
+let star = null, starCooldown = randIn(STAR.first);
+function spawnStar() {
+  if (star || !playing) return;
+  const top = ($('hud').offsetHeight || 96) + 50;
+  const bottom = Math.max(top + 40, cy - planetRadius * 0.55);
+  star = { t0: performance.now(), life: STAR.life * 1000, fromLeft: Math.random() < 0.5, y0: top + Math.random() * (bottom - top),
+    amp: 14 + Math.random() * 26, x: -100, y: -100, trail: [] };
+  Sound.starAppear();
+}
+function starPos(now) {
+  const p = (now - star.t0) / star.life;
+  const x = star.fromLeft ? -30 + (cw + 60) * p : cw + 30 - (cw + 60) * p;
+  return { p, x, y: star.y0 + Math.sin(p * Math.PI * 2.5) * star.amp };
+}
+// пятиконечная звезда с хвостом из искр и мягким сиянием
+function drawStar(now) {
+  const { p, x, y } = starPos(now);
+  if (p >= 1) { star = null; return; }
+  star.x = x; star.y = y;
+  const tr = star.trail;
+  tr.push({ x, y }); if (tr.length > 22) tr.shift();
+  for (let i = 0; i < tr.length; i++) {
+    const k = i / tr.length;
+    ctx.fillStyle = `rgba(253,230,138,${k * 0.55})`;
+    ctx.beginPath(); ctx.arc(tr[i].x, tr[i].y, 1 + k * 5, 0, Math.PI * 2); ctx.fill();
+  }
+  const fade = Math.min(1, p * 8, (1 - p) * 6);   // появляется и исчезает плавно
+  const r = 12 + Math.sin(now / 110) * 1.6;
+  ctx.globalAlpha = fade;
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r * 3.4);
+  g.addColorStop(0, 'rgba(255,255,255,0.95)'); g.addColorStop(0.25, 'rgba(253,224,71,0.55)'); g.addColorStop(1, 'rgba(253,224,71,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 3.4, 0, Math.PI * 2); ctx.fill();
+  ctx.save(); ctx.translate(x, y); ctx.rotate(now / 500);
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r; ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); }
+  ctx.closePath();
+  const body = ctx.createLinearGradient(0, -r, 0, r);
+  body.addColorStop(0, '#fffbeb'); body.addColorStop(0.5, '#fde047'); body.addColorStop(1, '#f59e0b');
+  ctx.fillStyle = body; ctx.fill();
+  ctx.lineWidth = 1.5; ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.stroke();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+  if (Math.random() < 0.25) particles.push({ x: x + (Math.random() - 0.5) * 10, y: y + (Math.random() - 0.5) * 10, vx: (Math.random() - 0.5) * 0.6, vy: 0.4 + Math.random() * 0.6, r: 1 + Math.random() * 1.5, color: '#fef9c3', life: 1, decay: 0.03 });
+}
+function pickStarBonus() {
+  let r = Math.random() * STAR_BONUS.reduce((a, b) => a + b.w, 0);
+  for (const b of STAR_BONUS) if ((r -= b.w) < 0) return b;
+  return STAR_BONUS[0];
+}
+function catchStar() {
+  if (!star) return;
+  const sx = star.x, sy = star.y, pid = cur(), B = pickStarBonus();
+  star = null;
+  starCooldown = randIn(STAR.every);
+  let text = B.desc;
+  if (B.id === 'frenzy' || B.id === 'wind') buffs[B.id] = Date.now() + B.sec * 1000;
+  else if (B.id === 'loot') {
+    const got = withoutBuffs(() => {
+      const r = rates(pid), out = {};
+      PL(pid).res.forEach(k => {
+        let v = (r[k] || 0) * 60 * B.min;
+        if (k === PL(pid).clickRes) v = Math.max(v, clickGain(pid) * 300);
+        if (v >= 1) out[k] = Math.floor(v);
+      });
+      return out;
+    });
+    for (const k in got) ps(pid).res[k] += got[k];
+    text = Object.entries(got).slice(0, 3).map(([k, v]) => `+${fmt(v)} ${RES[k].icon}`).join(' ');
+  } else if (B.id === 'gems') {
+    const g = Math.max(1, Math.round((2 + Math.floor(ps(pid).era / 3) + UNIVERSE_ORDER.indexOf(uniOf(pid)) * 3) * gemMult()));
+    state.gems += g; text = `+${fmt(g)} 💎`;
+  } else if (B.id === 'sapph') { state.sapphires += 1; text = '+1 🔷'; }
+  stat('stars');
+  spawnParticles(sx, sy, '#fde047', 26, 6, 3); spawnParticles(sx, sy, '#ffffff', 14, 4, 2);
+  ripples.push({ x: sx, y: sy, r: 6, life: 1, color: '#fde68a', speed: 4, width: 4, decay: 0.035 });
+  showFloat(Math.max(8, Math.min(cw - 170, sx - 60)), sy - 30, `${B.icon} ${B.name}`, 'star');
+  showToast(`🌠 ${B.name}! ${text}`, 3500);
+  Sound.star(); vibrate([20, 30, 40]);
+  refreshUI(); saveLocal(); queueSync(4000);
+}
+
 // ============================================================
 //  ДЕЙСТВИЯ ИГРОКА
 // ============================================================
@@ -3429,7 +3589,7 @@ function showFloat(x, y, text, cls) {
   el.innerText = text;
   el.style.left = x + 'px'; el.style.top = y + 'px';
   $('viewport').appendChild(el);
-  setTimeout(() => el.remove(), 800);
+  setTimeout(() => el.remove(), cls === 'star' ? 1450 : 800);
 }
 
 function tapSoundStyle() { const c = COSMETICS.find(x => x.id === state.tapSound); return c ? c.snd : 'default'; }
@@ -3565,6 +3725,7 @@ function evolveEra() {
          : nextUnlockHint(pid, era)
   });
   renderAll(); saveLocal(); queueSync(800);
+  checkLegend();
 }
 
 // подсказка после эволюции: новый этап открыл экспедицию на следующую планету измерения или чёрную дыру
@@ -3630,7 +3791,7 @@ function handleCosmetic(id) {
     return;
   }
   if (!state.ownedCosmetics.includes(id)) {
-    if (item.code || item.chest || itemLock(item)) { Sound.error(); return; }
+    if (item.code || item.chest || item.legend || itemLock(item)) { Sound.error(); return; }
     if (!canPay(item.cost)) { Sound.error(); return; }
     pay(item.cost);
     state.ownedCosmetics.push(id);
@@ -3665,6 +3826,8 @@ function dayKey(d = new Date()) { return `${d.getFullYear()}-${String(d.getMonth
 function hashStr(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
 function questAvailable(q) {
   if (q.need === 'planets') return state.unlocked.length > 1;
+  if (q.need === 'online') return canOnline();
+  if (q.need === 'sapphires') return state.sapphires >= 5 || (state.stats.chests || 0) > 0;
   if (q.need === 'gems') return state.gems > 0 || totalPrestige() > 0;
   if (q.need === 'evolve') return PLANET_ORDER.some(pid => isUnlocked(pid) && ps(pid).era < PL(pid).eras.length - 1);
   return true;
@@ -3702,6 +3865,7 @@ function achValue(a) {
   if (a.kind === 'uniall') return planetsMaxedCount(a.key);
   if (a.kind === 'uni') return state.unis.includes(a.key) ? 1 : 0;
   if (a.kind === 'sounds') return state.ownedCosmetics.filter(id => id.startsWith('snd_')).length;
+  if (a.kind === 'legend') return planetsMaxedAll();
   return 0;
 }
 function questState() {
@@ -3716,7 +3880,7 @@ function questState() {
   return { daily, ach, bonusReady: allDone && !Q.bonus, bonusClaimed: Q.bonus, dailyClaimed: daily.filter(d => d.claimed).length };
 }
 function claimableCount(Q = questState()) {
-  return Q.daily.filter(d => d.done && !d.claimed).length + (Q.bonusReady ? 1 : 0) + Q.ach.filter(x => x.done && !x.claimed).length;
+  return Q.daily.filter(d => d.done && !d.claimed).length + (Q.bonusReady ? 1 : 0) + Q.ach.filter(x => x.done && !x.claimed).length + (loginReady() ? 1 : 0);
 }
 function updateQuestBadge() {
   const n = claimableCount();
@@ -3764,7 +3928,14 @@ function renderQuests() {
   const Q = questState();
   $('qSapph').textContent = fmt(state.sapphires);
   const now = new Date(), mid = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  let i = 0, html = `<div class="q-section"><span>📅 Задания дня</span><span class="q-timer">новые через ${fmtTime((mid - now) / 1000)}</span></div>`;
+  let i = 0, html = '';
+  if (!demo) {   // награда за вход — первой строкой
+    const L = loginInfo(), parts = loginRewardParts(LOGIN_REWARDS[L.idx]).map(x => x.t).join(' · ');
+    html += `<div class="q-row q-login ${L.claimed ? 'claimed' : 'ready'}" style="--i:${i++}"><div class="q-ico">📅</div>
+      <div class="q-info"><div class="q-title">Награда за вход · день ${L.idx + 1} из 7</div><div class="q-desc">${L.claimed ? `Забрано · серия ${L.streak} ${plural(L.streak, 'день', 'дня', 'дней')} подряд` : esc(parts)}</div></div>
+      <button class="q-claim" data-qkind="login" data-qid="login" type="button">${L.claimed ? 'Календарь' : 'Забрать'}</button></div>`;
+  }
+  html += `<div class="q-section"><span>📅 Задания дня</span><span class="q-timer">новые через ${fmtTime((mid - now) / 1000)}</span></div>`;
   html += Q.daily.map(d => questRow('daily', d.q.id, d.q.icon, d.q.text.replace('{n}', fmt(d.q.n)), '', d.p, d.q.n, d.q.reward, d.done, d.claimed, i++)).join('');
   html += questRow('bonus', 'bonus', '🎁', 'Выполните все задания дня', 'Бонус за полный день', Q.dailyClaimed, Q.daily.length || DAILY_COUNT, DAILY_BONUS, Q.bonusReady || Q.bonusClaimed, Q.bonusClaimed, i++);
   const ach = Q.ach.slice().sort((x, y) => {
@@ -3826,6 +3997,9 @@ function renderSoundShop() {
 const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
 // Содержимое сундука: кристаллы, ресурсы текущей планеты (доход за N минут), ускоритель ×2, редкий образ
 function rollChest(c) {
+  return withoutBuffs(() => rollChestRaw(c));
+}
+function rollChestRaw(c) {
   const pid = cur(), r = rates(pid), out = { gems: Math.round(randInt(c.gems[0], c.gems[1]) * gemMult()), res: {}, boostMin: 0, item: null };
   const luck = perk('chest_luck');
   PL(pid).res.forEach(k => {
@@ -3842,11 +4016,11 @@ function rollChest(c) {
   return out;
 }
 let chestPending = null;
-function openChest(id) {
+function openChest(id, free) {
   const c = CHESTS.find(x => x.id === id);
   if (!c || !playing || chestPending) return;
-  if (state.sapphires < c.price) { Sound.error(); return; }
-  state.sapphires -= c.price;
+  if (!free && state.sapphires < c.price) { Sound.error(); return; }
+  if (!free) state.sapphires -= c.price;
   const rw = rollChest(c);
   state.gems += rw.gems;
   for (const k in rw.res) ps(cur()).res[k] += rw.res[k];
@@ -3854,7 +4028,7 @@ function openChest(id) {
   if (rw.item) state.ownedCosmetics.push(rw.item);
   stat('chests');
   saveLocal(); queueSync(800);
-  chestPending = { c, rw };
+  chestPending = { c, rw, free: !!free };
   // анимация: сундук трясётся, затем раскрывается
   const ov = $('chestOverlay');
   ov.style.setProperty('--c', c.color);
@@ -3887,7 +4061,133 @@ function closeChest() {
   const had = chestPending;
   chestPending = null;
   renderAll();
-  if (had) { renderShop(); $('shopOverlay').classList.add('open'); }
+  if (had && !had.free) { renderShop(); $('shopOverlay').classList.add('open'); }
+}
+
+// ============================================================
+//  НАГРАДА ЗА ВХОД, НАГРАДЫ НЕДЕЛИ, ФИНАЛ
+// ============================================================
+// Окна-награды показываются по очереди и только когда экран свободен (нет других окон, обучения, анимаций)
+const popupQueue = [];
+function queuePopup(fn) { popupQueue.push(fn); }
+setInterval(() => { if (popupQueue.length && playing && !screenBusy() && !tutOn()) popupQueue.shift()(); }, 700);
+
+// ---------- Награда за вход: 7 дней подряд ----------
+const yesterdayKey = () => dayKey(new Date(Date.now() - 86400000));
+function loginInfo() {
+  const L = state.login || { day: '', streak: 0 }, today = dayKey();
+  if (L.day === today) return { claimed: true, streak: L.streak, idx: (Math.max(1, L.streak) - 1) % 7 };
+  const streak = L.day === yesterdayKey() ? L.streak + 1 : 1;
+  return { claimed: false, streak, idx: (streak - 1) % 7 };
+}
+const loginReady = () => playing && !demo && !loginInfo().claimed;
+// показать календарь раз в день: при входе и в полночь, если игра так и осталась открытой
+let loginPromptDay = '';
+function promptLogin() {
+  if (demo || loginPromptDay === dayKey()) return;
+  loginPromptDay = dayKey();
+  queuePopup(() => { if (loginReady()) openLoginReward(); });
+}
+setInterval(() => { if (playing && loginReady()) promptLogin(); }, 60000);
+const loginGems = (R) => (R.gems || 0) * Math.max(1, state.unis.length);
+const midChest = () => CHESTS.filter(c => chestUni(c) === uniOf(cur()))[1];
+function loginRewardParts(R) {
+  const out = [];
+  if (R.sapphires) out.push({ ico: '🔷', t: `${R.sapphires} 🔷` });
+  if (R.gems) out.push({ ico: '💎', t: `${fmt(loginGems(R))} 💎` });
+  if (R.boostMin) out.push({ ico: '⚡', t: `×2 на ${R.boostMin} мин` });
+  if (R.chest) out.push({ ico: midChest().icon, t: midChest().name });
+  return out;
+}
+function openLoginReward() {
+  if (!playing || demo) return;
+  const I = loginInfo();
+  $('lrSub').textContent = I.claimed ? `Серия: ${I.streak} ${plural(I.streak, 'день', 'дня', 'дней')} подряд · завтра — новая награда` : `День ${I.idx + 1} из 7 · серия ${I.streak} ${plural(I.streak, 'день', 'дня', 'дней')}`;
+  $('lrGrid').innerHTML = LOGIN_REWARDS.map((R, i) => {
+    const parts = loginRewardParts(R), cls = i < I.idx || (I.claimed && i === I.idx) ? 'done' : i === I.idx ? 'today' : '';
+    return `<div class="lr-day ${cls} ${i === 6 ? 'big' : ''}"><b>${i === I.idx && !I.claimed ? 'Сегодня' : 'День ' + (i + 1)}</b><span class="lr-ico">${parts.map(x => x.ico).slice(0, 2).join('')}</span><i>${parts.map(x => esc(x.t)).join('<br>')}</i></div>`;
+  }).join('');
+  $('lrClaim').disabled = I.claimed;
+  $('lrClaim').textContent = I.claimed ? '✓ Сегодня уже забрано' : `Забрать награду дня ${I.idx + 1}`;
+  $('loginRewardOverlay').classList.add('open');
+  Sound.ui();
+}
+function claimLoginReward() {
+  const I = loginInfo();
+  if (I.claimed || !playing || demo) return;
+  const R = LOGIN_REWARDS[I.idx];
+  if (R.sapphires) state.sapphires += R.sapphires;
+  state.gems += loginGems(R);
+  if (R.boostMin) state.boostUntil = Math.min(Date.now() + 6 * 3600000, Math.max(Date.now(), state.boostUntil || 0) + R.boostMin * 60000);
+  state.login = { day: dayKey(), streak: I.streak };
+  if (I.streak > (state.stats.streak || 0)) state.stats.streak = I.streak;
+  Sound.reward(); vibrate([30, 40, 60]);
+  showToast(`📅 День ${I.idx + 1}: ${loginRewardParts(R).map(x => x.t).join(' · ')}`, 3500);
+  saveLocal(); queueSync(800);
+  $('loginRewardOverlay').classList.remove('open');
+  renderHeaderAndEra(); updateQuestBadge.n = -1; updateQuestBadge();
+  if ($('questsOverlay').classList.contains('open')) renderQuests();
+  if (R.chest) setTimeout(() => openChest(midChest().id, true), 450);
+}
+
+// ---------- Награды недели за топ игроков и альянсов (считает сервер) ----------
+let weeklyChecked = false, weeklyData = null;
+async function fetchWeeklyRewards() {
+  if (weeklyChecked || !canSync()) return;
+  weeklyChecked = true;
+  try {
+    const r = await api('/api/rewards');
+    if (r && r.total > 0) { weeklyData = r; queuePopup(openWeekly); }
+  } catch (e) { weeklyChecked = false; }
+}
+function weeklyRewardTable(table) {
+  let prev = 0;
+  return table.map(([upTo, v]) => { const t = upTo === prev + 1 ? `${upTo}` : `${prev + 1}–${upTo}`; prev = upTo; return `${t} — ${v} 🔷`; }).join(' · ');
+}
+function openWeekly() {
+  const r = weeklyData;
+  if (!r || !r.total) return;
+  const rows = [];
+  if (r.player) rows.push(`<div class="wk-row"><span class="wk-ico">🏆</span><span class="wk-txt">#${r.player.rank} в общем топе недели<i>топ игроков за прошлую неделю</i></span><span class="wk-val">+${r.player.sapphires} 🔷</span></div>`);
+  if (r.ally) rows.push(`<div class="wk-row"><span class="wk-ico">${r.ally.emblem || '🛡️'}</span><span class="wk-txt">«${esc(r.ally.name)}» — #${r.ally.rank} среди альянсов<i>награда каждому участнику</i></span><span class="wk-val">+${r.ally.sapphires} 🔷</span></div>`);
+  $('wkList').innerHTML = rows.join('');
+  $('wkClaim').disabled = false;
+  $('wkClaim').textContent = `Забрать +${r.total} 🔷`;
+  $('wkMsg').textContent = '';
+  $('weeklyOverlay').classList.add('open');
+  Sound.reward(); vibrate([30, 40, 60]);
+}
+async function claimWeekly() {
+  $('wkClaim').disabled = true; $('wkMsg').textContent = 'Забираем…'; $('wkMsg').className = 'nick-msg';
+  try {
+    const r = await api('/api/rewards/claim', { method: 'POST' });
+    if (r.sapphires > 0) {
+      state.sapphires += r.sapphires;
+      stat('weekly');
+      Sound.coin();
+      showToast(`🏆 Награда недели: +${r.sapphires} 🔷`, 3000);
+      saveLocal(); queueSync(500); renderHeaderAndEra(); updateQuestBadge.n = -1; updateQuestBadge();
+    }
+    weeklyData = null;
+    $('weeklyOverlay').classList.remove('open');
+  } catch (e) {
+    $('wkClaim').disabled = false;
+    $('wkMsg').textContent = 'Не получилось — проверьте интернет и попробуйте ещё раз'; $('wkMsg').className = 'nick-msg err';
+  }
+}
+
+// ---------- Финал: все этапы на всех 15 планетах ----------
+const planetsMaxedAll = () => PLANET_ORDER.filter(pid => bestStage(pid) >= PL(pid).eras.length - 1).length;
+function checkLegend() {
+  if (state.legend || !playing || planetsMaxedAll() < PLANET_ORDER.length) return;
+  state.legend = 1;
+  ['hat_legend', 'bg-multiverse'].forEach(id => { if (!state.ownedCosmetics.includes(id)) state.ownedCosmetics.push(id); });
+  saveLocal(); queueSync(500);
+  Sound.evolve(); vibrate([60, 60, 120, 60, 200]);
+  showCinema({ kicker: 'Финал', big: '♾️', title: 'Легенда всех измерений', color: '#fbbf24',
+    desc: 'Солнечная система, измерение CS2 и вселенная Майнкрафт пройдены до самого конца. Ваше имя знают во всех мирах.',
+    chips: ['🌌 Корона легенды', '♾️ Фон «Мультивселенная»', '🏅 Достижение «Легенда всех измерений»'],
+    extra: 'Престижи продолжаются: поднимайтесь в топах всех трёх измерений и ведите свой альянс к вершине!' });
 }
 
 // ============================================================
@@ -4194,10 +4494,12 @@ function renderHeaderAndEra() {
   });
   if ($('rv-gems')) { $('rv-gems').textContent = fmt(state.gems); $('rv-sapphire').textContent = fmt(state.sapphires); }
   $('hudSub').innerText = `${P.icon} ${stageLabel(pid)} · ×${fmt(planetMult(pid))}${prestigeCount(pid) ? ' · 🌀' + prestigeCount(pid) : ''}`;
-  const sp = speedMult(), bl = boostLeft();
-  $('speedBadge').hidden = sp <= 1 && !bl;
-  $('speedBadge').innerText = [bl ? `⚡×2 ${fmtCountdown(bl / 1000)}` : '', sp > 1 ? `⏳${Math.round(sp * 100)}%` : ''].filter(Boolean).join(' ');
-  $('speedBadge').classList.toggle('boost', !!bl);
+  const sp = speedMult(), bl = boostLeft(), fl = buffLeft('frenzy'), wl = buffLeft('wind');
+  $('speedBadge').hidden = sp <= 1 && !bl && !fl && !wl;
+  const sbt = [fl ? `🔥×${starBonus('frenzy').mult} ${fmtCountdown(fl / 1000)}` : '', wl ? `🌬️×${starBonus('wind').mult} ${fmtCountdown(wl / 1000)}` : '',
+    bl ? `⚡×2 ${fmtCountdown(bl / 1000)}` : '', sp > 1 ? `⏳${Math.round(sp * 100)}%` : ''].filter(Boolean).join(' ');
+  if ($('speedBadge').textContent !== sbt) $('speedBadge').textContent = sbt;
+  $('speedBadge').classList.toggle('boost', !!(bl || fl || wl));
   $('astText').innerText = activeAsteroid ? 'Бой!' : playing ? fmtCountdown(bossCooldown) : '—';
   $('astPill').classList.toggle('alert', !!activeAsteroid);
   // подсказки на кнопках меню: престиж готов, есть на что улучшить
@@ -4377,9 +4679,10 @@ function renderPanel() {
         const preview = item.type === 'bg'
           ? `<div class="icon-tile swatch" style="background:${item.swatch}"><span>${item.icon}</span></div>`
           : `<div class="icon-tile t-shop">${item.icon}</div>`;
-        const badge = item.code ? `<span class="planet-badge code">🎁 эксклюзив</span>` : item.chest ? `<span class="planet-badge chest">🧰 ${item.uni ? UNIVERSES[item.uni].short : 'редкий'}</span>` : item.planet ? `<span class="planet-badge">${PL(item.planet).icon} ${PL(item.planet).name}</span>` : item.uni ? `<span class="planet-badge">${UNIVERSES[item.uni].icon} ${UNIVERSES[item.uni].short}</span>` : '';
+        const badge = item.legend ? `<span class="planet-badge legend">♾️ финал</span>` : item.code ? `<span class="planet-badge code">🎁 эксклюзив</span>` : item.chest ? `<span class="planet-badge chest">🧰 ${item.uni ? UNIVERSES[item.uni].short : 'редкий'}</span>` : item.planet ? `<span class="planet-badge">${PL(item.planet).icon} ${PL(item.planet).name}</span>` : item.uni ? `<span class="planet-badge">${UNIVERSES[item.uni].icon} ${UNIVERSES[item.uni].short}</span>` : '';
         let btn;
         if (owned) btn = `<button class="btn-buy ${equipped ? 'equipped' : ''}" data-action="cosmetic" data-id="${item.id}" type="button"><span>${equipped ? '✓ Надето' : 'Надеть'}</span>${equipped ? '<span class="buy-sub">снять</span>' : ''}</button>`;
+        else if (item.legend) btn = `<button class="btn-buy" type="button" disabled><span>♾️ Финал</span><span class="buy-sub">${planetsMaxedAll()}/${PLANET_ORDER.length} планет пройдено</span></button>`;
         else if (item.code) btn = `<button class="btn-buy code-btn" data-action="codes" type="button"><span>🎁 Промокод</span><span class="buy-sub">только по коду</span></button>`;
         else if (item.chest) btn = `<button class="btn-buy chest-btn" data-action="chests" type="button"><span>🧰 Сундук</span><span class="buy-sub">только из сундуков</span></button>`;
         else if (lockedPlanet) btn = `<button class="btn-buy" type="button" disabled><span>${itemLock(item)}</span><span class="buy-sub">ещё закрыто</span></button>`;
@@ -4471,7 +4774,7 @@ function setupEvents() {
     else if (a === 'allydonate') openDonate();
     else if (a === 'chatally') { ui.chatTab = 'ally'; ui.chatWith = null; openPanel('chat'); }
     else if (a === 'chattab') { if (ui.chatTab !== id || ui.chatWith) { ui.chatTab = id; ui.chatWith = null; chatShellVer++; Sound.ui(); renderPanel(); } }
-    else if (a === 'chatwith') { ui.chatWith = id; chatShellVer++; Sound.ui(); renderPanel(); }
+    else if (a === 'chatwith') { Sound.ui(); openChatWith(id); }   // из списка личных сообщений и из друзей
     else if (a === 'chatback') { ui.chatWith = null; chatShellVer++; Sound.ui(); renderPanel(); fetchChatSummary(); }
     else if (a === 'chatsend') sendChat();
     else if (a === 'chatdel' || a === 'chatmute') chatAdmin(a, id);
@@ -4550,6 +4853,7 @@ function setupEvents() {
   $('questsClose').addEventListener('click', () => { $('questsOverlay').classList.remove('open'); Sound.ui(); });
   $('questsOverlay').addEventListener('click', (e) => {
     const b = e.target.closest('.q-claim');
+    if (b && b.dataset.qkind === 'login') { $('questsOverlay').classList.remove('open'); openLoginReward(); return; }
     if (b) { claimQuest(b.dataset.qkind, b.dataset.qid, b); return; }
     if (e.target === $('questsOverlay')) $('questsOverlay').classList.remove('open');
   });
@@ -4565,6 +4869,11 @@ function setupEvents() {
   $('coachSkip').addEventListener('click', tutSkip);
   $('chestOverlay').addEventListener('click', (e) => { if (e.target.closest('#chestTake')) return; revealChest(); });
   $('chestTake').addEventListener('click', () => { Sound.coin(); closeChest(); });
+  $('lrClose').addEventListener('click', () => { $('loginRewardOverlay').classList.remove('open'); Sound.ui(); });
+  $('lrClaim').addEventListener('click', claimLoginReward);
+  $('loginRewardOverlay').addEventListener('click', (e) => { if (e.target === $('loginRewardOverlay')) $('loginRewardOverlay').classList.remove('open'); });
+  $('wkClaim').addEventListener('click', claimWeekly);
+  $('weeklyOverlay').addEventListener('click', (e) => { if (e.target === $('weeklyOverlay')) $('weeklyOverlay').classList.remove('open'); });
   $('shopQuests').addEventListener('click', () => { $('shopOverlay').classList.remove('open'); openQuests(); });
   $('shopCode').addEventListener('click', openCodes);
   $('shopOverlay').addEventListener('click', (e) => { if (e.target === $('shopOverlay')) $('shopOverlay').classList.remove('open'); });
@@ -4621,6 +4930,10 @@ setInterval(() => {
     if (bossCooldown <= 0) spawnAsteroid();
   } else if (activeAsteroid && !document.hidden && performance.now() - astStepAt > 600) {
     stepAsteroid(dt);   // кадры не идут — двигаем астероид отсюда, чтобы таймер не замирал
+  }
+  if (!star && !cinemaOpen && !traveling && !document.hidden && !tutOn()) {
+    starCooldown -= dt;
+    if (starCooldown <= 0) spawnStar();
   }
 
   const autoLvl = perk('autoclicker');

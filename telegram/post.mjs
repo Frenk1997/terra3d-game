@@ -97,15 +97,17 @@ ${rows.map((p, i) => `${medal(i)} ${esc(p.nickname)} — ★ ${num(p.score)}${p.
 async function alliancesPost() {
   let d = await getJson(`${SITE}/api/alliances?period=week`), title = 'Топ альянсов недели';
   if ((d.alliances || []).length < 2) { d = await getJson(`${SITE}/api/alliances?period=all`); title = 'Топ альянсов'; }
-  const rows = (d.alliances || []).filter(a => a.taps > 0).slice(0, 10);
+  // мощь = ручные тапы участников + вложенные кристаллы × 500 (старый сервер присылал только taps)
+  const power = (a) => Number.isFinite(a.power) ? a.power : (a.taps || 0);
+  const rows = (d.alliances || []).filter(a => power(a) > 0).slice(0, 10);
   if (rows.length < 2) return null;
   return { text: `🛡️ <b>${title}</b>
 
-По тапам участников (только руками, без автокликера):
+По мощи: тапы участников (только руками) + вложенные 💎 кристаллы:
 
-${rows.map((a, i) => `${medal(i)} ${esc(a.emblem)} ${esc(a.name)} — 👆 ${num(a.taps)} · 👥 ${a.members}`).join('\n')}
+${rows.map((a, i) => `${medal(i)} ${esc(a.emblem)} ${esc(a.name)}${a.level ? ` (ур. ${a.level})` : ''} — ⚡ ${num(power(a))} · 👥 ${a.members}`).join('\n')}
 
-Всего альянсов: ${num(d.total)}. Вступить можно во вкладке «Друзья» → «Альянс» — по коду или из списка открытых.${footer()}` };
+Всего альянсов: ${num(d.total)}. Топ-3 альянса недели получают сапфиры — каждому участнику. Вступить можно во вкладке «Друзья» → «Альянс».${footer()}` };
 }
 
 // ---------- выбор поста ----------

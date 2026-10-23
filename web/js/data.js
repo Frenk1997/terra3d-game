@@ -2,7 +2,7 @@
 // Числа баланса подобраны симуляцией (см. tools/ в истории разработки).
 'use strict';
 
-const GAME_VERSION = 7; // формат сохранения (5 — престиж у каждой планеты, 6 — Венера и Меркурий, 7 — измерения CS2 и Майнкрафт)
+const GAME_VERSION = 8; // формат сохранения (5 — престиж у каждой планеты, 6 — Венера и Меркурий, 7 — измерения CS2 и Майнкрафт, 8 — звёзды, вход, финал)
 
 const RES = {
   // Земля
@@ -571,6 +571,9 @@ const COSMETICS = [
   { id: 'bg-aurora',      type: 'bg', name: 'Полярное сияние',     icon: '🌠', desc: 'Сияние над полюсами Юпитера.', cost: { 'jupiter:energy': 40000 }, planet: 'jupiter', swatch: 'linear-gradient(160deg, #065f46, #6d28d9 55%, #0b1026)' },
   { id: 'bg-dawn',        type: 'bg', name: 'Утренняя заря',       icon: '🌄', desc: 'Розово-золотое небо Венеры.', cost: { 'venus:heat': 40000 }, planet: 'venus', swatch: 'linear-gradient(180deg, #1e1b4b, #9d174d 55%, #f59e0b)' },
   { id: 'bg-corona',      type: 'bg', name: 'Солнечная корона',    icon: '☀️', desc: 'Огромное Солнце за Меркурием.', cost: { 'mercury:plasma': 40000 }, planet: 'mercury', swatch: 'radial-gradient(circle at 50% 110%, #fef08a 0 18%, #f97316 32%, #7c2d12 52%, #0c0a09 75%)' },
+  // Награда за финал — все этапы на всех 15 планетах (legend: true — не продаются)
+  { id: 'hat_legend',     type: 'hat', name: 'Корона легенды',      icon: '🌌', desc: 'Только для прошедших все три измерения.', legend: true },
+  { id: 'bg-multiverse',  type: 'bg',  name: 'Мультивселенная',     icon: '♾️', desc: 'Все измерения сразу — фон легенды.', legend: true, swatch: 'conic-gradient(from 0deg, #fbbf24, #f97316, #4ade80, #22d3ee, #a855f7, #fbbf24)' },
   // Только по промокоду (code: true — не продаются)
   { id: 'bg-founder',     type: 'bg', name: 'Первопроходец',       icon: '🌟', desc: 'Золотая пыль первых звёзд.', code: true, swatch: 'radial-gradient(circle at 50% 30%, #a16207, #1c1203 70%)' },
   { id: 'bg-community',   type: 'bg', name: 'Сообщество',          icon: '💬', desc: 'Для своих — из пака сообщества.', code: true, swatch: 'linear-gradient(160deg, #312e81, #6d28d9 50%, #0b1026)' },
@@ -620,6 +623,35 @@ const COSMETICS = [
 ];
 // Звук тапа, который стоит, пока ничего не куплено
 const DEFAULT_TAP_SOUND = 'snd_default';
+
+// ===== Падающие звёзды =====
+// Время от времени по небу пролетает звезда: успейте тапнуть — случайный бонус. Секунды: first — первая
+// после входа, every — между звёздами, life — сколько звезда летит по экрану.
+const STAR = { first: [50, 110], every: [140, 300], life: 9 };
+const STAR_BONUS = [
+  { id: 'frenzy', w: 30, icon: '🔥', name: 'Звёздная лихорадка', desc: 'Тапы ×7 на 20 секунд',     mult: 7, sec: 20 },
+  { id: 'wind',   w: 30, icon: '🌬️', name: 'Солнечный ветер',    desc: 'Доход ×3 на 45 секунд',    mult: 3, sec: 45 },
+  { id: 'loot',   w: 26, icon: '💰', name: 'Звёздный клад',      desc: 'Доход планеты за 15 минут', min: 15 },
+  { id: 'gems',   w: 10, icon: '💎', name: 'Осколок звезды',     desc: 'Кристаллы' },
+  { id: 'sapph',  w: 4,  icon: '🔷', name: 'Сапфировая пыль',    desc: '+1 сапфир' }
+];
+
+// ===== Награда за вход: 7 дней подряд (пропустили день — снова с первого) =====
+// gems умножаются на число открытых измерений; chest — бесплатный сундук (средний) текущего измерения
+const LOGIN_REWARDS = [
+  { sapphires: 2 },
+  { gems: 5 },
+  { sapphires: 3 },
+  { boostMin: 30 },
+  { sapphires: 4, gems: 5 },
+  { gems: 15 },
+  { sapphires: 6, chest: true }
+];
+
+// ===== Награды недели (выдаёт сервер в понедельник за прошлую неделю; такие же числа в server/worker.js) =====
+// [до какого места включительно, сколько 🔷]
+const WEEKLY_PLAYER_REWARDS = [[1, 15], [2, 10], [3, 8], [10, 5], [50, 2]];
+const WEEKLY_ALLY_REWARDS = [[1, 10], [2, 7], [3, 5], [10, 2]];
 
 // ===== Престиж планеты =====
 // У каждой планеты свои престижи. n — сколько престижей уже сделано на этой планете.
@@ -698,7 +730,10 @@ const DAILY_QUESTS = [
   { id: 'd_time',    icon: '⏱️', text: 'Играйте {n} минут',               stat: 'minutes',   n: 10,  reward: 1 },
   { id: 'd_perk',    icon: '🌳', text: 'Улучшите любой перк',             stat: 'perks',     n: 1,   reward: 1, need: 'gems' },
   { id: 'd_travel',  icon: '🚀', text: 'Слетайте на другую планету',      stat: 'travels',   n: 1,   reward: 1, need: 'planets' },
-  { id: 'd_build2',  icon: '🏙️', text: 'Постройте {n} зданий',           stat: 'built',     n: 120, reward: 2 }
+  { id: 'd_build2',  icon: '🏙️', text: 'Постройте {n} зданий',           stat: 'built',     n: 120, reward: 2 },
+  { id: 'd_star',    icon: '🌠', text: 'Поймайте {n} падающие звезды',    stat: 'stars',     n: 2,   reward: 2 },
+  { id: 'd_chat',    icon: '💬', text: 'Напишите сообщение в чат',        stat: 'chatMsgs',  n: 1,   reward: 1, need: 'online' },
+  { id: 'd_chest',   icon: '🧰', text: 'Откройте сундук',                 stat: 'chests',    n: 1,   reward: 1, need: 'sapphires' }
 ];
 const DAILY_COUNT = 3;
 const DAILY_BONUS = 2;     // за все задания дня
@@ -759,8 +794,16 @@ const ACHIEVEMENTS = [
   { id: 'a_mc_all',  icon: '🐉', name: 'Конец и начало',       desc: 'Пройдите все этапы на всех биомах Майнкрафта', kind: 'uniall', key: 'mc', goal: 5, reward: 30 },
   { id: 'a_combo50', icon: '🔥', name: 'В огне',               desc: 'Наберите серию тапов ×50',          kind: 'stat', key: 'combo',     goal: 50,     reward: 3 },
   { id: 'a_donate',  icon: '🎗️', name: 'Меценат',              desc: 'Вложите 100 💎 в свой альянс',       kind: 'stat', key: 'donated',   goal: 100,    reward: 5 },
-  { id: 'a_sound',   icon: '🎵', name: 'Звукорежиссёр',        desc: 'Купите звук тапа в магазине',       kind: 'sounds',                 goal: 1,      reward: 2 }
+  { id: 'a_sound',   icon: '🎵', name: 'Звукорежиссёр',        desc: 'Купите звук тапа в магазине',       kind: 'sounds',                 goal: 1,      reward: 2 },
+  // звёзды, вход, чат, недели, финал
+  { id: 'a_star1',   icon: '🌠', name: 'Загадай желание',      desc: 'Поймайте падающую звезду',          kind: 'stat', key: 'stars',     goal: 1,      reward: 1 },
+  { id: 'a_star25',  icon: '✨', name: 'Ловец звёзд',          desc: 'Поймайте 25 падающих звёзд',        kind: 'stat', key: 'stars',     goal: 25,     reward: 4 },
+  { id: 'a_star100', icon: '🔭', name: 'Звездочёт',            desc: 'Поймайте 100 падающих звёзд',       kind: 'stat', key: 'stars',     goal: 100,    reward: 8 },
+  { id: 'a_streak7', icon: '📅', name: 'Неделя в космосе',     desc: 'Заходите в игру 7 дней подряд',     kind: 'stat', key: 'streak',    goal: 7,      reward: 5 },
+  { id: 'a_chat10',  icon: '💬', name: 'Голос галактики',      desc: 'Напишите 10 сообщений в чат',       kind: 'stat', key: 'chatMsgs',  goal: 10,     reward: 2 },
+  { id: 'a_week',    icon: '🏆', name: 'Чемпион недели',       desc: 'Получите награду недели за топ',    kind: 'stat', key: 'weekly',    goal: 1,      reward: 3 },
+  { id: 'a_legend',  icon: '♾️', name: 'Легенда всех измерений', desc: 'Пройдите все этапы на всех 15 планетах', kind: 'legend',            goal: 15,     reward: 30 }
 ];
 
 // Для Node (симуляция баланса и тесты)
-if (typeof module !== 'undefined') module.exports = { GAME_VERSION, RES, PLANETS, PLANET_ORDER, UNIVERSES, UNIVERSE_ORDER, UNIVERSE_BONUS, uniOf, NEW_PLANETS, GLOBAL_PERKS, COSMETICS, PRESTIGE, prestigeGoals, prestigeGems, CHESTS, BUY_MODES, BUILD_GROWTH, DAILY_QUESTS, DAILY_COUNT, DAILY_BONUS, ACHIEVEMENTS, ALLY_LEVEL_BONUS, ALLY_LEVEL_MAX, ALLY_GEM_POWER, ALLY_LEVEL_STEP, allyLevel, allyLevelAt };
+if (typeof module !== 'undefined') module.exports = { STAR, STAR_BONUS, LOGIN_REWARDS, WEEKLY_PLAYER_REWARDS, WEEKLY_ALLY_REWARDS, GAME_VERSION, RES, PLANETS, PLANET_ORDER, UNIVERSES, UNIVERSE_ORDER, UNIVERSE_BONUS, uniOf, NEW_PLANETS, GLOBAL_PERKS, COSMETICS, PRESTIGE, prestigeGoals, prestigeGems, CHESTS, BUY_MODES, BUILD_GROWTH, DAILY_QUESTS, DAILY_COUNT, DAILY_BONUS, ACHIEVEMENTS, ALLY_LEVEL_BONUS, ALLY_LEVEL_MAX, ALLY_GEM_POWER, ALLY_LEVEL_STEP, allyLevel, allyLevelAt };

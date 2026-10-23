@@ -297,6 +297,17 @@ const Sound = (() => {
       noise({ dur: 1.2, vol: 0.3, from: 400, to: 8000, type: 'bandpass', q: 1, delay: 2.0 });
       notes(392, [0, 7, 12, 19, 24]).forEach((f, i) => tone({ freq: f, type: 'sine', dur: 1.2, vol: 0.09, delay: 2.2 + i * 0.09, attack: 0.02 }));
     },
+    // падающая звезда: появилась — тихий перезвон; поймана — сверкающее арпеджио
+    starAppear() { notes(1568, [0, 7, 12]).forEach((f, i) => tone({ freq: f, type: 'sine', dur: 0.5, vol: 0.05, delay: i * 0.09, attack: 0.01 })); },
+    star() {
+      notes(784, [0, 4, 7, 12, 16, 19, 24]).forEach((f, i) => tone({ freq: f, type: i % 2 ? 'sine' : 'triangle', dur: 0.32, vol: 0.1, delay: i * 0.045, attack: 0.004 }));
+      noise({ dur: 0.5, vol: 0.06, from: 9000, to: 4000, type: 'highpass', delay: 0.05 });
+    },
+    // награда за вход / недели — фанфары покороче
+    reward() {
+      notes(523, [0, 4, 7, 12]).forEach((f, i) => tone({ freq: f, type: 'triangle', dur: 0.3, vol: 0.12, delay: i * 0.08 }));
+      notes(523, [16, 19, 24]).forEach((f, i) => tone({ freq: f, type: 'sine', dur: 0.9, vol: 0.07, delay: 0.34 + i * 0.03, attack: 0.03 }));
+    },
     // мягкий щелчок интерфейса
     ui() { if (throttle('ui', 40)) tone({ freq: 880, to: 660, type: 'sine', dur: 0.05, vol: 0.08 }); },
     // покупка

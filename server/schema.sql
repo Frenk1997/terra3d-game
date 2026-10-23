@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS player_meta (
   seen_at     INTEGER NOT NULL DEFAULT 0,  -- последняя активность (для «в сети»)
   ally_gems   INTEGER NOT NULL DEFAULT 0,  -- кристаллы, вложенные в нынешний альянс
   admin       INTEGER NOT NULL DEFAULT 0,  -- 1 — администратор (чит-меню, модерация чата)
-  muted_until INTEGER NOT NULL DEFAULT 0   -- до какого времени игроку закрыт чат
+  muted_until INTEGER NOT NULL DEFAULT 0,  -- до какого времени игроку закрыт чат
+  reward_week INTEGER NOT NULL DEFAULT 0   -- за какую неделю уже забраны награды недели
 );
 CREATE INDEX IF NOT EXISTS idx_meta_alliance ON player_meta (alliance_id, ally_taps DESC);
 
@@ -128,7 +129,7 @@ CREATE INDEX IF NOT EXISTS link_codes_sub ON link_codes (sub);
 
 -- ===== Чат =====
 -- channel: 'g' — общий, 'a:<id альянса>', 'd:<sub1>|<sub2>' — личные сообщения друзей. Хранится 30 дней.
--- (В старых базах столбцы admin, muted_until, ally_gems, gems сервер добавляет сам при запуске — см. ensureSchema в worker.js.)
+-- (В старых базах столбцы admin, muted_until, ally_gems, gems, reward_week сервер добавляет сам при запуске — см. ensureSchema в worker.js.)
 CREATE TABLE IF NOT EXISTS chat_messages (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,
   channel  TEXT NOT NULL,

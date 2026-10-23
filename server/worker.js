@@ -26,7 +26,7 @@ const MAX_BODY_BYTES = 192 * 1024;
 const MAX_SAVE_BYTES = 120000;    // 15 планет в трёх измерениях
 // Какие поля сохранения хранятся (остальное отбрасывается). Последние пять — старый формат v2.
 const SAVE_KEYS = ['v', 'planet', 'unlocked', 'unis', 'planets', 'gems', 'sapphires', 'perks', 'ppk', 'ppr', 'rebirths', 'boostUntil', 'ownedCosmetics', 'look',
-                   'stats', 'quests', 'tapSound', 'tut', 'lastSave', 'res', 'counts', 'era', 'equippedHat', 'equippedBg'];
+                   'stats', 'quests', 'tapSound', 'tut', 'login', 'legend', 'lastSave', 'res', 'counts', 'era', 'equippedHat', 'equippedBg'];
 const MAX_REBIRTHS = 100000;
 const SCORE_PER_MIN = 150;       // на сколько очков рейтинг может вырасти за минуту (престиж = 100 очков)
 const FIRST_SYNC_ALLOWANCE = 600; // стартовый запас для нового аккаунта (перенос старого прогресса)
@@ -916,7 +916,8 @@ async function handlePlayer(request, url, env) {
       chests: intOr0(st.chests), playSec: intOr0(st.playSec), evolves: intOr0(st.evolves),
       achievements: Array.isArray(quests.ach) ? quests.ach.length : 0,
       cosmetics: Array.isArray(save.ownedCosmetics) ? save.ownedCosmetics.length : 0,
-      gems: intOr0(save.gems), allianceTaps: meta ? meta.ally_taps : 0
+      gems: intOr0(save.gems), allianceTaps: meta ? meta.ally_taps : 0,
+      stars: intOr0(st.stars), combo: intOr0(st.combo), streak: intOr0(st.streak)
     },
     friends: fc ? fc.c : 0,
     alliance: meta ? await allianceBrief(env, meta.alliance_id) : null
@@ -1210,6 +1211,55 @@ async function handleAllianceSettings(request, sub, env) {
 }
 
 // ============================================================
+//  НАГРАДЫ НЕДЕЛИ: топ игроков и топ альянсов прошлой недели
+// ============================================================
+// В понедельник игрок забирает 🔷 за место прошлой недели: в общем недельном топе и (каждый участник) за место
+// своего альянса — если вступил в него до конца той недели. Один раз в неделю (player_meta.reward_week).
+// Таблицы такие же, как WEEKLY_PLAYER_REWARDS / WEEKLY_ALLY_REWARDS в web/js/data.js: [до места, сапфиры].
+const WEEKLY_PLAYER_REWARDS = [[1, 15], [2, 10], [3, 8], [10, 5], [50, 2]];
+const WEEKLY_ALLY_REWARDS = [[1, 10], [2, 7], [3, 5], [10, 2]];
+const rewardFor = (table, rank) => { for (const [upTo, v] of table) if (rank <= upTo) return v; return 0; };
+async function weeklyRewards(env, sub, meta) {
+  const week = weekId(Date.now()) - 1;
+  if ((meta.reward_week || 0) >= week) return { week, total: 0, claimed: true };
+  const out = { week, total: 0, player: null, ally: null };
+  const me = await env.DB.prepare("SELECT score, at FROM weekly_scores WHERE week = ?1 AND board = 'all' AND sub = ?2").bind(week, sub).first();
+  if (me && me.score > 0) {
+    const r = await env.DB.prepare("SELECT COUNT(*) AS c FROM weekly_scores WHERE week = ?1 AND board = 'all' AND (score > ?2 OR (score = ?2 AND at < ?3))")
+      .bind(week, me.score, me.at).first();
+    const rank = (r ? r.c : 0) + 1, v = rewardFor(WEEKLY_PLAYER_REWARDS, rank);
+    if (v) { out.player = { rank, sapphires: v }; out.total += v; }
+  }
+  if (meta.alliance_id && (meta.ally_at || 0) < weekEnd(week)) {
+    const a = await env.DB.prepare('SELECT w.taps, w.gems, w.at, al.name, al.emblem FROM alliance_weekly w JOIN alliances al ON al.id = w.alliance_id WHERE w.week = ?1 AND w.alliance_id = ?2')
+      .bind(week, meta.alliance_id).first();
+    if (a && (a.taps > 0 || a.gems > 0)) {
+      const pw = a.taps + a.gems * ALLY_GEM_POWER;
+      const r = await env.DB.prepare(`SELECT COUNT(*) AS c FROM alliance_weekly WHERE week = ?1 AND ((taps + gems * ${ALLY_GEM_POWER}) > ?2 OR ((taps + gems * ${ALLY_GEM_POWER}) = ?2 AND at < ?3))`)
+        .bind(week, pw, a.at).first();
+      const rank = (r ? r.c : 0) + 1, v = rewardFor(WEEKLY_ALLY_REWARDS, rank);
+      if (v) { out.ally = { rank, sapphires: v, name: a.name, emblem: a.emblem }; out.total += v; }
+    }
+  }
+  return out;
+}
+async function handleRewards(sub, env) {
+  const p = await getPlayer(env, sub);
+  if (!p) return fail(404, 'no_profile');
+  return json(await weeklyRewards(env, sub, await touchMeta(env, sub, p)));
+}
+async function handleRewardsClaim(sub, env) {
+  const p = await getPlayer(env, sub);
+  if (!p) return fail(404, 'no_profile');
+  const r = await weeklyRewards(env, sub, await touchMeta(env, sub, p));
+  if (r.claimed || !r.total) return json({ ok: true, ...r, sapphires: 0 });
+  // помечаем неделю забранной; второй запрос (двойное нажатие, два устройства) ничего не получит
+  const u = await env.DB.prepare('UPDATE player_meta SET reward_week = ?1 WHERE sub = ?2 AND reward_week < ?1').bind(r.week, sub).run();
+  if (!(u && u.meta && u.meta.changes)) return json({ ok: true, week: r.week, total: 0, claimed: true, sapphires: 0 });
+  return json({ ok: true, ...r, sapphires: r.total });
+}
+
+// ============================================================
 //  ЧАТ: общий, альянса и личные сообщения между друзьями
 // ============================================================
 // Каналы: 'g' — общий, 'a:<id альянса>', 'd:<sub1>|<sub2>' — личный (sub по алфавиту). Игра опрашивает сервер
@@ -1350,6 +1400,7 @@ function ensureSchema(env) {
       'ALTER TABLE player_meta ADD COLUMN ally_gems INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE alliances ADD COLUMN gems INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE alliance_weekly ADD COLUMN gems INTEGER NOT NULL DEFAULT 0',
+      'ALTER TABLE player_meta ADD COLUMN reward_week INTEGER NOT NULL DEFAULT 0',
       `CREATE TABLE IF NOT EXISTS chat_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, sub TEXT NOT NULL,
         nickname TEXT NOT NULL, text TEXT NOT NULL, at INTEGER NOT NULL)`,
       'CREATE INDEX IF NOT EXISTS idx_chat_channel ON chat_messages (channel, id)',
@@ -1491,7 +1542,7 @@ async function handleTwitchUnlink(sub, env) {
 
 const PROTECTED = ['/api/me', '/api/profile', '/api/sync', '/api/reset', '/api/account', '/api/redeem', '/api/social',
   '/api/friends', '/api/friends/remove', '/api/alliance/create', '/api/alliance/join', '/api/alliance/leave', '/api/alliance/kick', '/api/alliance/settings',
-  '/api/alliance/donate', '/api/chat', '/api/chat/summary', '/api/chat/delete', '/api/chat/mute',
+  '/api/alliance/donate', '/api/chat', '/api/chat/summary', '/api/chat/delete', '/api/chat/mute', '/api/rewards', '/api/rewards/claim',
   '/api/twitch/code', '/api/twitch/unlink'];
 
 // ---------- переезд на другой сервер ----------
@@ -1586,6 +1637,8 @@ export default {
         if (path === '/api/chat/summary' && m === 'GET') return await handleChatSummary(sub, env);
         if (path === '/api/chat/delete' && m === 'POST') return await handleChatDelete(request, sub, env);
         if (path === '/api/chat/mute' && m === 'POST') return await handleChatMute(request, sub, env);
+        if (path === '/api/rewards' && m === 'GET') return await handleRewards(sub, env);
+        if (path === '/api/rewards/claim' && m === 'POST') return await handleRewardsClaim(sub, env);
         if (path === '/api/twitch/code' && m === 'POST') return await handleTwitchCode(sub, env);
         if (path === '/api/twitch/unlink' && m === 'POST') return await handleTwitchUnlink(sub, env);
       }

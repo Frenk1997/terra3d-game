@@ -295,6 +295,7 @@
   /* ================= ЭФФЕКТЫ ================= */
   .floating-text { position: absolute; color: #fde047; font-weight: 900; font-size: 1rem; pointer-events: none; z-index: 20; white-space: nowrap; animation: floatUp 0.8s ease-out forwards; text-shadow: 0 0 6px rgba(0, 0, 0, 0.9), 0 2px 4px #000; }
   .floating-text.crit { color: #fb7185; font-size: 1.3rem; }
+  .floating-text.star { color: #fef08a; font-size: 1.05rem; text-shadow: 0 0 12px rgba(250, 204, 21, 0.9), 0 2px 4px #000; animation-duration: 1.4s; }
   @keyframes floatUp { 0% { opacity: 1; transform: translateY(0) scale(0.9); } 100% { opacity: 0; transform: translateY(-50px) scale(1.12); } }
   .buy-float { position: fixed; z-index: 600; transform: translate(-50%, 0); color: #6ee7b7; font-weight: 900; font-size: 1rem; pointer-events: none; text-shadow: 0 2px 6px #000; animation: buyFloat 0.9s ease-out forwards; }
   @keyframes buyFloat { to { opacity: 0; transform: translate(-50%, -40px) scale(1.2); } }
@@ -921,6 +922,42 @@
   .cheat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .cheat-grid .btn-small { white-space: normal; text-align: left; line-height: 1.25; padding: 8px 9px; }
 
+  /* справочник */
+  .help-list { display: flex; flex-direction: column; gap: 8px; }
+  .help-row { display: flex; gap: 10px; padding: 10px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.045); border: 1px solid rgba(255, 255, 255, 0.07); }
+  .help-ico { font-size: 1.4rem; line-height: 1.2; flex-shrink: 0; }
+  .help-row b { font-size: 0.82rem; }
+  .help-row p { margin: 3px 0 0; font-size: 0.72rem; color: #cbd5e1; line-height: 1.4; }
+
+  /* награда за вход */
+  .lr-sheet { max-width: 400px; padding: 16px 14px; gap: 12px; }
+  .lr-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+  .lr-day { position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 4px 8px; border-radius: 14px; border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.045); text-align: center; min-height: 92px; }
+  .lr-day b { font-size: 0.62rem; color: var(--text-dim); font-weight: 900; text-transform: uppercase; letter-spacing: 0.04em; }
+  .lr-day .lr-ico { font-size: 1.5rem; line-height: 1.2; }
+  .lr-day i { font-style: normal; font-size: 0.64rem; font-weight: 800; color: #dbe4ff; line-height: 1.25; }
+  .lr-day.done { opacity: 0.55; }
+  .lr-day.done::after { content: '✓'; position: absolute; top: 4px; right: 7px; color: #4ade80; font-weight: 900; font-size: 0.8rem; }
+  .lr-day.today { border-color: #facc15; background: linear-gradient(160deg, rgba(250, 204, 21, 0.22), rgba(124, 58, 237, 0.18)); box-shadow: 0 0 18px rgba(250, 204, 21, 0.35); animation: sideGlow 1.6s ease-in-out infinite; }
+  .lr-day.today b { color: #fde68a; }
+  .lr-day.big { grid-column: span 2; background: linear-gradient(160deg, rgba(167, 139, 250, 0.2), rgba(236, 72, 153, 0.14)); }
+  .lr-day.big .lr-ico { font-size: 1.9rem; }
+  .lr-note { font-size: 0.66rem; color: var(--text-faint); text-align: center; }
+  .wk-cup { font-size: 3.2rem; text-align: center; filter: drop-shadow(0 6px 18px rgba(250, 204, 21, 0.6)); animation: floaty 3s ease-in-out infinite; }
+  .wk-title { text-align: center; margin: -4px 0 0; }
+  .wk-sub { text-align: center; }
+  .wk-list { display: flex; flex-direction: column; gap: 7px; }
+  .wk-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 14px; border: 1px solid rgba(250, 204, 21, 0.4); background: linear-gradient(90deg, rgba(250, 204, 21, 0.16), rgba(250, 204, 21, 0.03)); }
+  .wk-row .wk-ico { font-size: 1.5rem; }
+  .wk-row .wk-txt { flex: 1; display: flex; flex-direction: column; font-size: 0.8rem; font-weight: 800; }
+  .wk-row .wk-txt i { font-style: normal; font-size: 0.66rem; color: var(--text-dim); font-weight: 700; }
+  .wk-row .wk-val { font-weight: 900; color: #93c5fd; white-space: nowrap; }
+  .lb-prize { font-size: 0.66rem; font-weight: 800; color: #fde68a; background: rgba(250, 204, 21, 0.08); border: 1px dashed rgba(250, 204, 21, 0.4); border-radius: 10px; padding: 6px 10px; text-align: center; flex-shrink: 0; }
+  .q-login { border-color: rgba(250, 204, 21, 0.55) !important; background: linear-gradient(90deg, rgba(250, 204, 21, 0.14), rgba(255, 255, 255, 0.03)) !important; }
+  .pf-legend { margin-top: 6px; padding: 4px 12px; border-radius: 99px; font-size: 0.72rem; font-weight: 900; color: #1c1003; background: linear-gradient(90deg, #fbbf24, #4ade80, #22d3ee, #a855f7); box-shadow: 0 0 16px rgba(250, 204, 21, 0.45); }
+  .planet-badge.legend { background: linear-gradient(90deg, rgba(251, 191, 36, 0.3), rgba(168, 85, 247, 0.3)); color: #fde68a; }
+  #viewport[data-bg="bg-multiverse"] { background: radial-gradient(circle at 20% 25%, rgba(251, 191, 36, 0.35), transparent 40%), radial-gradient(circle at 80% 30%, rgba(74, 222, 128, 0.3), transparent 42%), radial-gradient(circle at 70% 80%, rgba(168, 85, 247, 0.38), transparent 45%), radial-gradient(circle at 25% 80%, rgba(34, 211, 238, 0.3), transparent 42%), #05030f; }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.001s !important; animation-iteration-count: 1 !important; transition-duration: 0.001s !important; }
   }
@@ -1083,6 +1120,31 @@
       <button class="btn-icon" id="questsClose" type="button">✕</button>
     </div>
     <div class="q-body" id="questsBody"></div>
+  </div>
+</div>
+
+<!-- ===== Награда за вход (7 дней) ===== -->
+<div class="overlay" id="loginRewardOverlay">
+  <div class="sheet lr-sheet">
+    <div class="q-head">
+      <div><h2>📅 Награда за вход</h2><div class="q-sub" id="lrSub">Заходите каждый день — награда растёт</div></div>
+      <button class="btn-icon" id="lrClose" type="button">✕</button>
+    </div>
+    <div class="lr-grid" id="lrGrid"></div>
+    <button class="btn-main" id="lrClaim" type="button">Забрать</button>
+    <div class="lr-note" id="lrNote">Пропустите день — серия начнётся заново</div>
+  </div>
+</div>
+
+<!-- ===== Награды недели за топ ===== -->
+<div class="overlay" id="weeklyOverlay">
+  <div class="sheet lr-sheet">
+    <div class="wk-cup">🏆</div>
+    <h2 class="wk-title">Награды недели</h2>
+    <div class="q-sub wk-sub">Итоги прошлой недели</div>
+    <div class="wk-list" id="wkList"></div>
+    <button class="btn-main" id="wkClaim" type="button">Забрать</button>
+    <div class="nick-msg" id="wkMsg"></div>
   </div>
 </div>
 
