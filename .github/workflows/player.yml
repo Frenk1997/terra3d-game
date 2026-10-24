@@ -1,0 +1,56 @@
+# Сохранение игрока: история по ежедневным копиям базы на VPS и восстановление из копии.
+# Actions → Player save → Run workflow: ник игрока, действие (history — посмотреть, restore — вернуть) и дата копии.
+name: Player save
+
+on:
+  workflow_dispatch:
+    inputs:
+      nickname:
+        description: 'Ник игрока'
+        required: true
+      action:
+        description: 'history — история, restore — восстановить из копии'
+        required: true
+        default: history
+        type: choice
+        options: [history, restore]
+      day:
+        description: 'Для restore: дата копии ГГГГ-ММ-ДД (смотрите в history)'
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  player:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Получить код
+        uses: actions/checkout@v5
+
+      - name: Сохранение игрока
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          NICK: ${{ inputs.nickname }}
+          ACTION: ${{ inputs.action }}
+          DAY: ${{ inputs.day }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VPS_HOST:-}" ]; then echo "::error::Нет секрета VPS_HOST"; exit 1; fi
+          case "$ACTION" in history|restore) ;; *) echo "::error::Неизвестное действие"; exit 1 ;; esac
+          printf '%s' "$NICK" | grep -Eq '^[^[:space:]]{1,32}$' || { echo "::error::Странный ник"; exit 1; }
+          printf '%s' "${DAY:-}" | grep -Eq '^([0-9]{4}-[0-9]{2}-[0-9]{2})?$' || { echo "::error::Дата — ГГГГ-ММ-ДД"; exit 1; }
+          source server/vps/ssh.sh
+          rssh 'umask 077 && cat > /tmp/terra-player.mjs' < server/vps/player.mjs
+          # аргументы передаём через base64 — без кавычек и спецсимволов в командной строке
+          N64="$(printf '%s' "$NICK" | base64 -w0)"
+          rssh "N=\$(echo $N64 | base64 -d); /opt/terra/bin/node --no-warnings /tmp/terra-player.mjs $ACTION \"\$N\" ${DAY:-}; rc=\$?; rm -f /tmp/terra-player.mjs; exit \$rc" | tee -a "$GITHUB_STEP_SUMMARY"
