@@ -48,9 +48,15 @@ jobs:
           if [ -z "${VPS_HOST:-}" ]; then echo "::error::Нет секрета VPS_HOST"; exit 1; fi
           case "$ACTION" in history|restore) ;; *) echo "::error::Неизвестное действие"; exit 1 ;; esac
           printf '%s' "$NICK" | grep -Eq '^[^[:space:]]{1,32}$' || { echo "::error::Странный ник"; exit 1; }
-          printf '%s' "${DAY:-}" | grep -Eq '^([0-9]{4}-[0-9]{2}-[0-9]{2})?$' || { echo "::error::Дата — ГГГГ-ММ-ДД"; exit 1; }
+          if [ -n "${DAY:-}" ] && ! printf '%s' "$DAY" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'; then echo "::error::Дата — ГГГГ-ММ-ДД"; exit 1; fi
           source server/vps/ssh.sh
           rssh 'umask 077 && cat > /tmp/terra-player.mjs' < server/vps/player.mjs
           # аргументы передаём через base64 — без кавычек и спецсимволов в командной строке
           N64="$(printf '%s' "$NICK" | base64 -w0)"
-          rssh "N=\$(echo $N64 | base64 -d); /opt/terra/bin/node --no-warnings /tmp/terra-player.mjs $ACTION \"\$N\" ${DAY:-}; rc=\$?; rm -f /tmp/terra-player.mjs; exit \$rc" | tee -a "$GITHUB_STEP_SUMMARY"
+          rc=0
+          rssh "N=\$(echo $N64 | base64 -d); /opt/terra/bin/node --no-warnings /tmp/terra-player.mjs $ACTION \"\$N\" ${DAY:-}; rc=\$?; rm -f /tmp/terra-player.mjs; exit \$rc" > out.txt 2>&1 || rc=$?
+          cat out.txt; cat out.txt >> "$GITHUB_STEP_SUMMARY"
+          # итог ещё и аннотацией — её видно на странице запуска и через API
+          msg="$(sed -e 's/%/%25/g' out.txt | awk '{printf "%s%%0A", $0}')"
+          echo "::notice title=Player save ($ACTION)::$msg"
+          exit $rc
