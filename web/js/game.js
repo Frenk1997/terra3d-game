@@ -444,9 +444,31 @@ function saveLocal() {
   if (!uid || demo) return;   // гость ничего не сохраняет
   try { state.lastSave = Date.now(); localStorage.setItem('terra_save_' + uid, JSON.stringify(state)); } catch (e) {}
 }
+// Какое сохранение свежее: то, где дальше прогресс (престижи, измерения, планеты, этапы), и только при
+// равенстве — более позднее по времени. Часам устройства не доверяем: на втором телефоне они могут
+// спешить, и старый прогресс оказался бы «новее» облачного.
+function saveAhead(s) {
+  if (!s) return [-1];
+  const pr = (s.v >= 5 && s.ppr) ? PLANET_ORDER.reduce((a, p) => a + ((s.ppr[p] | 0)), 0) : (s.rebirths | 0);
+  return [pr, Array.isArray(s.unis) ? s.unis.length : 1, Array.isArray(s.unlocked) ? s.unlocked.length : 1, progressOf(s)];
+}
 function pickNewest(a, b) {
-  if (a && b) return (Number(b.lastSave) || 0) > (Number(a.lastSave) || 0) ? b : a;
+  if (a && b) {
+    const A = saveAhead(a), B = saveAhead(b);
+    for (let i = 0; i < A.length; i++) if (A[i] !== B[i]) return B[i] > A[i] ? b : a;
+    return (Number(b.lastSave) || 0) > (Number(a.lastSave) || 0) ? b : a;
+  }
   return a || b || null;
+}
+// Сервер не принял сохранение: в облаке прогресс дальше (играли на другом устройстве) — берём облачное
+function adoptCloud(save) {
+  applySave(save);
+  state.lastSave = Date.now();
+  endAsteroid(true);
+  onPlanetChanged();
+  saveLocal();
+  setSync('ok');
+  showToast('☁️ На другом устройстве прогресс дальше — загрузили его', 4500);
 }
 function setSync(kind) {
   const d = $('syncDot');
@@ -493,6 +515,7 @@ async function syncNow(keepalive = false) {
   } catch (e) {
     if (e.status === 401) { syncing = false; forceLogout('Сессия истекла. Войдите снова.'); return; }
     if (e.status === 404 && e.message === 'no_profile') { syncing = false; logout({ ask: false, skipSync: true, message: 'Аккаунт не найден. Войдите снова.' }); return; }
+    if (e.status === 409 && e.message === 'stale_save' && e.data && e.data.save) { syncing = false; adoptCloud(e.data.save); return; }
     if (e.status === 409 && e.message === 'client_outdated') {
       clientOutdated = true;
       if (IS_TWITCH) { showToast('Вышла новая версия игры — на Twitch она появится чуть позже', 6000); setSync('off'); return; }
@@ -2162,7 +2185,7 @@ const HELP = [
   ['☄️', 'Астероиды', 'Раз в несколько минут к планете летит астероид — тапайте по нему, пока не разобьёте. Золотой даёт втрое больше.'],
   ['🌠', 'Падающие звёзды', 'Поймайте звезду — выпадет бонус: тапы ×7, доход ×3, клад за 15 минут, кристаллы или сапфир.'],
   ['📜', 'Квесты и сапфиры', 'Три задания каждый день, достижения и награда за вход (7 дней подряд — бесплатный сундук). Сапфиры 🔷 тратятся в магазине на сундуки и звуки тапа.'],
-  ['🪐', 'Планеты и измерения', 'На карте — экспедиции на новые планеты. Пройдите Солнечную систему, и откроется чёрная дыра в измерение CS2, а из него — портал во вселенную Майнкрафт. Каждое измерение +25% к доходу всех планет.'],
+  ['🪐', 'Планеты и измерения', 'На карте — экспедиции на новые планеты. Пройдите Солнечную систему, и откроется чёрная дыра в измерение CS2, а из него — портал во вселенную Майнкрафт. Первая планета нового измерения начинается с нуля, а прошлые планеты и все престижи остаются — переключайтесь вкладками вверху карты. Каждое измерение +25% к доходу всех планет.'],
   ['🏆', 'Топы и награды недели', 'Общий топ, престижи каждого измерения, топы планет и альянсов — за неделю и за всё время. В понедельник лучшие игроки и альянсы прошлой недели получают сапфиры.'],
   ['🛡️', 'Друзья и альянсы', 'Друзья — по коду. В альянсе тапы и вложенные 💎 дают мощь: она поднимает альянс в топе и даёт уровни (+2% дохода всем). Основать альянс может прошедший всю Солнечную систему.'],
   ['💬', 'Чат', 'Общий чат, чат альянса и личные сообщения друзьям. Мат скрывается, ссылки запрещены.'],
@@ -4392,7 +4415,7 @@ function enterUniverse(u) {
     const E = PL(first).eras[0];
     showCinema({ kicker: 'Новое измерение', big: UNIVERSES[u].icon, title: UNIVERSES[u].name, desc: UNIVERSES[u].arrive, color: UNIVERSES[u].color,
       chips: [`${PL(first).icon} ${PL(first).name}`, `🧰 Новые сундуки`, `🎩 Новые образы`, `🏆 Топ престижей «${UNIVERSES[u].short}»`],
-      extra: `+${Math.round(UNIVERSE_BONUS * 100)}% к доходу всех планет! Первая планета: ${PL(first).name} — «${E.name}».` });
+      extra: `+${Math.round(UNIVERSE_BONUS * 100)}% к доходу всех планет! ${PL(first).name} начинается с первого этапа, а прошлые планеты и все ${fmt(totalPrestige())} ${plural(totalPrestige(), 'престиж', 'престижа', 'престижей')} остаются с вами — вернуться можно на карте.` });
   });
 }
 // анимация: экран засасывает в воронку с огненным диском, звёзды растягиваются, вспышка — и новое измерение
@@ -4493,7 +4516,10 @@ function renderHeaderAndEra() {
     $('rr-' + k).textContent = rate > 0 ? `+${fmt(rate)}/с` : RES[k].name;
   });
   if ($('rv-gems')) { $('rv-gems').textContent = fmt(state.gems); $('rv-sapphire').textContent = fmt(state.sapphires); }
-  $('hudSub').innerText = `${P.icon} ${stageLabel(pid)} · ×${fmt(planetMult(pid))}${prestigeCount(pid) ? ' · 🌀' + prestigeCount(pid) : ''}`;
+  // престижи этой планеты; если в других (например, после чёрной дыры здесь ещё 0) — и сколько всего
+  const prAll = totalPrestige(), prHere = prestigeCount(pid);
+  const hs = `${P.icon} ${stageLabel(pid)} · ×${fmt(planetMult(pid))}${prHere ? ' · 🌀' + prHere : ''}${prAll > prHere ? ` · всего 🌀${fmt(prAll)}` : ''}`;
+  if ($('hudSub').innerText !== hs) $('hudSub').innerText = hs;
   const sp = speedMult(), bl = boostLeft(), fl = buffLeft('frenzy'), wl = buffLeft('wind');
   $('speedBadge').hidden = sp <= 1 && !bl && !fl && !wl;
   const sbt = [fl ? `🔥×${starBonus('frenzy').mult} ${fmtCountdown(fl / 1000)}` : '', wl ? `🌬️×${starBonus('wind').mult} ${fmtCountdown(wl / 1000)}` : '',
@@ -4642,7 +4668,11 @@ function renderPanel() {
     // Престиж и улучшения — в одной вкладке: сначала престиж планеты, ниже перки
     const info = prestigeInfo(pid);
     let i = 0;
-    const others = state.unlocked.filter(x => uniOf(x) === uniOf(pid)).map(x => `<span class="pp-chip ${x === pid ? 'cur' : ''}">${PL(x).icon} ${prestigeCount(x)} 🌀 · ×${planetMult(x)}</span>`).join('');
+    // престижи всех открытых планет — по измерениям (прошлые измерения никуда не деваются)
+    const others = UNIVERSE_ORDER.filter(u => state.unlocked.some(x => uniOf(x) === u)).map(u => {
+      const chips = state.unlocked.filter(x => uniOf(x) === u).map(x => `<span class="pp-chip ${x === pid ? 'cur' : ''}">${PL(x).icon} ${prestigeCount(x)} 🌀 · ×${planetMult(x)}</span>`).join('');
+      return state.unis.length > 1 ? `<div class="pp-uni">${UNIVERSES[u].icon} ${UNIVERSES[u].short}</div>${chips}` : chips;
+    }).join('') + (totalPrestige() ? `<div class="pp-total">Всего престижей во всех измерениях: 🌀 ${fmt(totalPrestige())}</div>` : '');
     container.innerHTML = `
       <div class="card rebirth-card" style="--i:${i++}">
         <div class="card-title" style="font-size:0.95rem;color:#f5d0fe;">🌀 Престиж планеты «${P.name}» №${info.n + 1}</div>

@@ -448,6 +448,20 @@ const PLANET_STEP = 100000;
 const PRESTIGE_STEP = 10000000;
 const MAX_PRESTIGE = 100000;
 const clampInt = (x, lo, hi) => Math.min(hi, Math.max(lo, Number.isInteger(x) ? x : 0));
+// Сколько престижей в сохранении (v5+: сумма по планетам, раньше — общее число перерождений)
+function savePrestige(x) {
+  if (!x || typeof x !== 'object') return 0;
+  if (Number(x.v) >= 5 && x.ppr && typeof x.ppr === 'object') return PLANET_IDS.reduce((a, pid) => a + clampInt(x.ppr[pid], 0, MAX_PRESTIGE), 0);
+  return clampInt(x.rebirths, 0, MAX_REBIRTHS);
+}
+function saveRollsBack(stored, next) {
+  if (!stored || typeof stored !== 'object') return false;   // после сброса (save = NULL) принимаем любое
+  if (savePrestige(next) < savePrestige(stored)) return true;
+  const list = (x, k) => Array.isArray(x && x[k]) ? x[k] : [];
+  if (list(stored, 'unlocked').some(pid => PLANET_IDS.includes(pid) && !list(next, 'unlocked').includes(pid))) return true;
+  if (list(stored, 'unis').some(u => UNIVERSE_IDS.includes(u) && !list(next, 'unis').includes(u))) return true;
+  return false;
+}
 function planetValue(pid, pl, earthEra, prestige = 0) {
   if (!pl || typeof pl !== 'object') return 0;
   const raw = pid === 'earth' ? earthEra : pl.era;
@@ -651,6 +665,10 @@ async function handleSync(request, sub, env) {
   const now = Date.now();
   const meta = await touchMeta(env, sub, p, now);
   const admin = !!meta.admin;
+  // Сохранение с устройства «откатывает» прогресс (меньше престижей, пропали открытые планеты или измерения)?
+  // В обычной игре так не бывает — это пишет устаревшее устройство: второй телефон, давно открытая вкладка,
+  // неверные часы. Такое не принимаем и отдаём облачное сохранение — игра загрузит его сама.
+  if (!admin && saveRollsBack(stored, clean)) return json({ error: 'stale_save', save: stored }, 409);
   const unlockedList = Array.isArray(clean.unlocked) ? clean.unlocked : [];
   let claimed, totalPr = 0;
   if (v >= 5) {
